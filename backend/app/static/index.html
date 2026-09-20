@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#14532d" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="stylesheet" href="/styles.css" />
+    <title>DoseKeep</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">DoseKeep</p>
+      <h1>Medication supply, simply tracked.</h1>
+      <p>Scan a pack, check the expiry, then keep stock and dosette allocations up to date.</p>
+      <section>
+        <h2>Test a medicine Data Matrix</h2>
+        <label for="code">Decoded GS1 text</label>
+        <textarea id="code" rows="4" spellcheck="false">(01)03400930330531(21)31PF39M8GW(17)280930(10)8219107</textarea>
+        <button id="parse">Parse pack code</button>
+        <pre id="result" aria-live="polite"></pre>
+      </section>
+      <section>
+        <h2>Next build step</h2>
+        <p>Camera scanning, product lookup and pack creation will follow this working API foundation.</p>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
+

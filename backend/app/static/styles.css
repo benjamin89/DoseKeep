@@ -1,0 +1,11 @@
+:root { color-scheme: light; font-family: system-ui, sans-serif; background: #f7f8f4; color: #173222; }
+body { margin: 0; }
+main { max-width: 42rem; margin: auto; padding: 3rem 1.25rem; }
+.eyebrow { font-weight: 700; color: #166534; text-transform: uppercase; letter-spacing: .08em; }
+h1 { font-size: clamp(2rem, 8vw, 3.6rem); line-height: 1.04; margin: .25rem 0 1rem; }
+section { background: white; padding: 1.25rem; margin: 1.25rem 0; border-radius: 1rem; box-shadow: 0 1px 3px #0002; }
+textarea, button { width: 100%; box-sizing: border-box; margin-top: .5rem; font: inherit; }
+textarea { padding: .75rem; border: 1px solid #9ca3af; border-radius: .5rem; }
+button { border: 0; border-radius: .5rem; padding: .75rem; background: #166534; color: white; font-weight: 700; }
+pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+

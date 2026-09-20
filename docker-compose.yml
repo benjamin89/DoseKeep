@@ -1,0 +1,14 @@
+services:
+  dosekeep:
+    build: ./backend
+    container_name: dosekeep
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - dosekeep-data:/data
+
+volumes:
+  dosekeep-data:
+
