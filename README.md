@@ -13,11 +13,11 @@ DoseKeep is a private, self-hosted companion for tracking medicines, supplements
 ## Run locally
 
 ```bash
-cp .env.example .env
 docker compose up --build
 ```
 
 Open `http://localhost:8080`. The initial API documentation is at `http://localhost:8080/docs`.
+For Portainer, deploy this repository as a Git stack; no `.env` file is needed for the default local SQLite setup.
 
 ## Intended next milestones
 

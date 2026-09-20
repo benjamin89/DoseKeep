@@ -3,7 +3,9 @@ services:
     build: ./backend
     container_name: dosekeep
     restart: unless-stopped
-    env_file: .env
+    environment:
+      DOSEKEEP_DATABASE_URL: ${DOSEKEEP_DATABASE_URL:-sqlite:////data/dosekeep.db}
+      DOSEKEEP_ALLOWED_ORIGINS: ${DOSEKEEP_ALLOWED_ORIGINS:-http://localhost:8080}
     ports:
       - "8080:8080"
     volumes:
@@ -11,4 +13,3 @@ services:
 
 volumes:
   dosekeep-data:
-
