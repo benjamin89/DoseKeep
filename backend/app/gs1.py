@@ -46,6 +46,13 @@ def _parse_machine_gs1(raw: str) -> dict[str, str]:
     values: dict[str, str] = {}
     index = 0
     while index < len(raw):
+        # Some mobile decoders preserve a leading GS/FNC1 control character,
+        # and others leave a trailing separator. It is a field boundary, not
+        # an application identifier, so ignore it before reading the next AI.
+        while index < len(raw) and raw[index] in {"\x1d", "\x1e"}:
+            index += 1
+        if index >= len(raw):
+            break
         ai = raw[index : index + 2]
         if ai not in FIXED_LENGTH and ai not in VARIABLE_LENGTH:
             raise ValueError(f"Unsupported GS1 field {ai}")
