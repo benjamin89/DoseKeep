@@ -41,6 +41,7 @@ class Pack(Base):
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     quantity_initial: Mapped[int] = mapped_column(Integer)
     quantity_remaining: Mapped[int] = mapped_column(Integer)
+    quantity_in_dosette: Mapped[int] = mapped_column(Integer, default=0)
     obtained_on: Mapped[date] = mapped_column(Date, default=date.today)
     status: Mapped[str] = mapped_column(String(30), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -60,4 +61,3 @@ class SupplyEvent(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     pack: Mapped[Pack] = relationship(back_populates="events")
-

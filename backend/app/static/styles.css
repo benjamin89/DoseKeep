@@ -4,8 +4,11 @@ main { max-width: 42rem; margin: auto; padding: 3rem 1.25rem; }
 .eyebrow { font-weight: 700; color: #166534; text-transform: uppercase; letter-spacing: .08em; }
 h1 { font-size: clamp(2rem, 8vw, 3.6rem); line-height: 1.04; margin: .25rem 0 1rem; }
 section { background: white; padding: 1.25rem; margin: 1.25rem 0; border-radius: 1rem; box-shadow: 0 1px 3px #0002; }
-textarea, button { width: 100%; box-sizing: border-box; margin-top: .5rem; font: inherit; }
-textarea { padding: .75rem; border: 1px solid #9ca3af; border-radius: .5rem; }
+textarea, input, button { width: 100%; box-sizing: border-box; margin-top: .5rem; font: inherit; }
+textarea, input { padding: .75rem; border: 1px solid #9ca3af; border-radius: .5rem; }
 button { border: 0; border-radius: .5rem; padding: .75rem; background: #166534; color: white; font-weight: 700; }
+.secondary { background: #475569; }
+.camera-actions { display: flex; gap: .75rem; }
+.camera-actions button { flex: 1; }
+video { width: 100%; margin-top: 1rem; border-radius: .75rem; background: #111; }
 pre { overflow-wrap: anywhere; white-space: pre-wrap; }
-

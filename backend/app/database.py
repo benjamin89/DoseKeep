@@ -2,7 +2,7 @@
 
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 
@@ -23,3 +23,12 @@ def get_session():
     finally:
         session.close()
 
+
+def ensure_schema() -> None:
+    """Apply the one additive migration required by the initial MVP."""
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    with engine.begin() as connection:
+        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(packs)"))}
+        if "quantity_in_dosette" not in columns:
+            connection.execute(text("ALTER TABLE packs ADD COLUMN quantity_in_dosette INTEGER NOT NULL DEFAULT 0"))

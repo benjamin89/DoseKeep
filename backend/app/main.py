@@ -7,15 +7,28 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from .database import Base, engine, get_session
+from .catalogue import lookup_french_gtin
+from .database import Base, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
 from .models import Pack, Product, SupplyEvent
-from .schemas import DecodedCode, PackCreate, PackRead, ProductCreate, ProductRead, SupplyEventCreate, SupplyEventRead
+from .schemas import (
+    CatalogueProductRead,
+    DecodedCode,
+    PackCreate,
+    PackRead,
+    ProductCreate,
+    ProductRead,
+    ScannedPackCreate,
+    ScannedPackRead,
+    SupplyEventCreate,
+    SupplyEventRead,
+)
 
 
 Base.metadata.create_all(bind=engine)
+ensure_schema()
 
-app = FastAPI(title="DoseKeep", version="0.1.0")
+app = FastAPI(title="DoseKeep", version="0.2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:8080"],
@@ -35,6 +48,14 @@ def parse_scan(raw: str):
         return parse_medicine_code(raw)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/api/v1/catalogue/fr/{gtin}", response_model=CatalogueProductRead)
+def lookup_french_catalogue(gtin: str):
+    product = lookup_french_gtin(gtin)
+    if not product:
+        raise HTTPException(status_code=404, detail="No active French catalogue match")
+    return {"gtin": gtin, **product.__dict__}
 
 
 @app.get("/api/v1/products", response_model=list[ProductRead])
@@ -67,12 +88,65 @@ def create_pack(pack: PackCreate, session: Session = Depends(get_session)):
     return record
 
 
+@app.post("/api/v1/packs/from-scan", response_model=ScannedPackRead, status_code=201)
+def create_pack_from_scan(scan: ScannedPackCreate, session: Session = Depends(get_session)):
+    try:
+        decoded = parse_medicine_code(scan.raw)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    gtin = decoded.get("gtin")
+    if not gtin:
+        raise HTTPException(status_code=422, detail="The scan does not contain a GTIN")
+    catalogue_product = lookup_french_gtin(str(gtin))
+    if not catalogue_product:
+        raise HTTPException(status_code=404, detail="No French catalogue match; create the product manually")
+
+    existing_pack = session.query(Pack).filter(Pack.gtin == gtin, Pack.serial_number == decoded.get("serial_number")).first()
+    if existing_pack:
+        return {"product": existing_pack.product, "pack": existing_pack, "created": False}
+
+    product = session.query(Product).filter(Product.barcode == gtin).first()
+    if not product:
+        product = Product(
+            name=catalogue_product.name,
+            form=catalogue_product.form,
+            barcode=gtin,
+            catalogue_source=catalogue_product.source,
+        )
+        session.add(product)
+        session.flush()
+    pack = Pack(
+        product_id=product.id,
+        gtin=gtin,
+        serial_number=decoded.get("serial_number"),
+        batch_number=decoded.get("batch_number"),
+        expiry_date=decoded.get("expiry_date"),
+        quantity_initial=scan.quantity_initial,
+        quantity_remaining=scan.quantity_initial,
+        obtained_on=scan.obtained_on or date.today(),
+    )
+    session.add(pack)
+    session.commit()
+    session.refresh(product)
+    session.refresh(pack)
+    return {"product": product, "pack": pack, "created": True}
+
+
 @app.post("/api/v1/packs/{pack_id}/events", response_model=SupplyEventRead, status_code=201)
 def add_supply_event(pack_id: int, event: SupplyEventCreate, session: Session = Depends(get_session)):
     pack = session.get(Pack, pack_id)
     if not pack:
         raise HTTPException(status_code=404, detail="Pack not found")
-    if event.event_type in {"dosette_fill", "taken", "disposed"}:
+    if event.event_type == "dosette_fill":
+        if pack.quantity_remaining < event.quantity:
+            raise HTTPException(status_code=409, detail="Insufficient pack stock")
+        pack.quantity_remaining -= event.quantity
+        pack.quantity_in_dosette += event.quantity
+    elif event.event_type == "taken":
+        if pack.quantity_in_dosette < event.quantity:
+            raise HTTPException(status_code=409, detail="Insufficient dosette stock")
+        pack.quantity_in_dosette -= event.quantity
+    elif event.event_type == "disposed":
         if pack.quantity_remaining < event.quantity:
             raise HTTPException(status_code=409, detail="Insufficient pack stock")
         pack.quantity_remaining -= event.quantity
@@ -85,4 +159,3 @@ def add_supply_event(pack_id: int, event: SupplyEventCreate, session: Session = 
 
 static_dir = Path(__file__).parent / "static"
 app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
-

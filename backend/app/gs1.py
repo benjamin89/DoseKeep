@@ -13,6 +13,8 @@ def parse_gs1(raw: str) -> dict[str, str]:
     Phone scanners commonly render GS1 application identifiers in brackets.
     This deliberately supports the medicine-pack fields needed for the MVP.
     """
+    if not raw.startswith("("):
+        return _parse_machine_gs1(raw)
     values: dict[str, str] = {}
     index = 0
     while index < len(raw):
@@ -38,6 +40,34 @@ def parse_gs1(raw: str) -> dict[str, str]:
     return values
 
 
+def _parse_machine_gs1(raw: str) -> dict[str, str]:
+    """Parse scanner output using FNC1/GS separators rather than brackets."""
+    raw = raw.removeprefix("]d2")
+    values: dict[str, str] = {}
+    index = 0
+    while index < len(raw):
+        ai = raw[index : index + 2]
+        if ai not in FIXED_LENGTH and ai not in VARIABLE_LENGTH:
+            raise ValueError(f"Unsupported GS1 field {ai}")
+        index += 2
+        if ai in FIXED_LENGTH:
+            length = FIXED_LENGTH[ai]
+            value = raw[index : index + length]
+            if len(value) != length:
+                raise ValueError(f"Incomplete GS1 field {ai}")
+            index += length
+        else:
+            separator = raw.find("\x1d", index)
+            if separator == -1:
+                value, index = raw[index:], len(raw)
+            else:
+                value, index = raw[index:separator], separator + 1
+            if not value:
+                raise ValueError(f"Empty GS1 field {ai}")
+        values[ai] = value
+    return values
+
+
 def parse_medicine_code(raw: str) -> dict[str, object]:
     values = parse_gs1(raw)
     parsed: dict[str, object] = {"raw": raw, "gtin": values.get("01"), "serial_number": values.get("21"), "batch_number": values.get("10")}
@@ -48,4 +78,3 @@ def parse_medicine_code(raw: str) -> dict[str, object]:
     else:
         parsed["expiry_date"] = None
     return parsed
-

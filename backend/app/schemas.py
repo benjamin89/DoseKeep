@@ -35,6 +35,7 @@ class PackCreate(BaseModel):
 class PackRead(PackCreate):
     id: int
     status: str
+    quantity_in_dosette: int
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -61,3 +62,25 @@ class DecodedCode(BaseModel):
     expiry_date: date | None = None
     batch_number: str | None = None
 
+
+class CatalogueProductRead(BaseModel):
+    gtin: str
+    name: str
+    form: str | None = None
+    route: str | None = None
+    holder: str | None = None
+    presentation: str | None = None
+    quantity_hint: int | None = None
+    source: str
+
+
+class ScannedPackCreate(BaseModel):
+    raw: str
+    quantity_initial: int = Field(gt=0)
+    obtained_on: date | None = None
+
+
+class ScannedPackRead(BaseModel):
+    product: ProductRead
+    pack: PackRead
+    created: bool
