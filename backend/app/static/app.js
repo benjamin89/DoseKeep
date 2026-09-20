@@ -225,4 +225,4 @@ document.querySelector("#save").addEventListener("click", async () => {
 });
 
 loadPacks();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.3.2");
