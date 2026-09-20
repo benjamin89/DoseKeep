@@ -10,10 +10,13 @@ from sqlalchemy.orm import Session
 from .catalogue import lookup_french_gtin
 from .database import Base, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
+from .medikeep import MediKeepUnavailable, active_medications, normalize_name, suggested_medications
 from .models import Pack, Product, SupplyEvent
 from .schemas import (
     CatalogueProductRead,
     DecodedCode,
+    MediKeepImportRead,
+    MediKeepMedicationRead,
     PackCreate,
     PackRead,
     ProductCreate,
@@ -29,7 +32,7 @@ from .schemas import (
 Base.metadata.create_all(bind=engine)
 ensure_schema()
 
-app = FastAPI(title="DoseKeep", version="0.3.0")
+app = FastAPI(title="DoseKeep", version="0.4.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:8080"],
@@ -57,6 +60,61 @@ def lookup_french_catalogue(gtin: str):
     if not product:
         raise HTTPException(status_code=404, detail="No active French catalogue match")
     return {"gtin": gtin, **product.__dict__}
+
+
+def medikeep_read(medication) -> dict:
+    return medication.__dict__
+
+
+@app.get("/api/v1/medikeep/active-medications", response_model=list[MediKeepMedicationRead])
+def list_medikeep_active_medications():
+    try:
+        return [medikeep_read(medication) for medication in active_medications()]
+    except MediKeepUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/v1/medikeep/suggestions", response_model=list[MediKeepMedicationRead])
+def list_medikeep_suggestions(name: str):
+    try:
+        return [medikeep_read(medication) for medication in suggested_medications(name)]
+    except MediKeepUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/v1/medikeep/import/{medication_id}", response_model=MediKeepImportRead)
+def import_medikeep_medication(medication_id: int, session: Session = Depends(get_session)):
+    """Create or explicitly link a DoseKeep product from an active MediKeep record."""
+    try:
+        medication = next((item for item in active_medications() if item.id == medication_id), None)
+    except MediKeepUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    if not medication:
+        raise HTTPException(status_code=404, detail="Active MediKeep medication not found")
+    product = session.query(Product).filter(Product.medikeep_medication_id == medication.id).first()
+    created = False
+    if not product:
+        medication_tokens = normalize_name(f"{medication.name} {medication.dosage or ''}")
+        candidates = session.query(Product).filter(Product.medikeep_medication_id.is_(None)).all()
+        product = next(
+            (item for item in candidates if medication_tokens & normalize_name(item.name)),
+            None,
+        )
+        if product:
+            product.medikeep_medication_id = medication.id
+        else:
+            product = Product(
+                name=medication.name,
+                strength=medication.dosage,
+                category="medicine",
+                catalogue_source="MediKeep (read-only import)",
+                medikeep_medication_id=medication.id,
+            )
+            session.add(product)
+            created = True
+    session.commit()
+    session.refresh(product)
+    return {"product": product, "created": created}
 
 
 @app.get("/api/v1/products", response_model=list[ProductRead])
@@ -115,6 +173,14 @@ def create_pack_from_scan(scan: ScannedPackCreate, session: Session = Depends(ge
     if not catalogue_product:
         raise HTTPException(status_code=404, detail="No French catalogue match; create the product manually")
 
+    if scan.medikeep_medication_id is not None:
+        try:
+            active_ids = {item.id for item in active_medications()}
+        except MediKeepUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if scan.medikeep_medication_id not in active_ids:
+            raise HTTPException(status_code=422, detail="Selected MediKeep medication is not active")
+
     existing_pack = session.query(Pack).filter(Pack.gtin == gtin, Pack.serial_number == decoded.get("serial_number")).first()
     if existing_pack:
         return {"product": existing_pack.product, "pack": existing_pack, "created": False}
@@ -124,11 +190,15 @@ def create_pack_from_scan(scan: ScannedPackCreate, session: Session = Depends(ge
         product = Product(
             name=catalogue_product.name,
             form=catalogue_product.form,
+            category=scan.category,
             barcode=gtin,
             catalogue_source=catalogue_product.source,
+            medikeep_medication_id=scan.medikeep_medication_id,
         )
         session.add(product)
         session.flush()
+    elif scan.medikeep_medication_id is not None:
+        product.medikeep_medication_id = scan.medikeep_medication_id
     pack = Pack(
         product_id=product.id,
         gtin=gtin,

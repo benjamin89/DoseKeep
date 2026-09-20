@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#14532d" />
-    <link rel="manifest" href="/manifest.webmanifest?v=0.3.2" />
-    <link rel="stylesheet" href="/styles.css?v=0.3.2" />
+    <link rel="manifest" href="/manifest.webmanifest?v=0.4.0" />
+    <link rel="stylesheet" href="/styles.css?v=0.4.0" />
     <title>DoseKeep</title>
   </head>
   <body>
@@ -33,6 +33,18 @@
       <section id="save-pack" hidden>
         <h2>Confirm pack</h2>
         <div id="product-match"></div>
+        <label for="product-category">What is this?</label>
+        <select id="product-category">
+          <option value="medicine">Prescription medicine</option>
+          <option value="otc">Over-the-counter / pharmacy item</option>
+          <option value="supplement">Vitamin or supplement</option>
+          <option value="other">Other health product</option>
+        </select>
+        <div id="medikeep-link" hidden>
+          <label for="medikeep-medication">Link to an active MediKeep medicine (optional)</label>
+          <select id="medikeep-medication"></select>
+          <p class="hint">DoseKeep reads MediKeep only; it will not change your clinical record.</p>
+        </div>
         <label for="quantity">Tablets/items in this pack</label>
         <input id="quantity" type="number" min="1" inputmode="numeric" />
         <button id="save">Save this pack</button>
@@ -48,8 +60,18 @@
         </div>
         <div id="packs" aria-live="polite">Loading packs…</div>
       </section>
+      <section id="medikeep-section" hidden>
+        <div class="section-heading">
+          <div>
+            <h2>Active MediKeep medicines</h2>
+            <p>Import or link the ones you want DoseKeep to track.</p>
+          </div>
+          <button id="refresh-medikeep" class="secondary compact">Refresh</button>
+        </div>
+        <div id="medikeep-medicines"></div>
+      </section>
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
     </main>
-    <script src="/app.js?v=0.3.2"></script>
+    <script src="/app.js?v=0.4.0"></script>
   </body>
 </html>

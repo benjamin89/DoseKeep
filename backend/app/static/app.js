@@ -7,6 +7,11 @@ const productMatch = document.querySelector("#product-match");
 const quantity = document.querySelector("#quantity");
 const saveResult = document.querySelector("#save-result");
 const packsContainer = document.querySelector("#packs");
+const productCategory = document.querySelector("#product-category");
+const medikeepLink = document.querySelector("#medikeep-link");
+const medikeepMedication = document.querySelector("#medikeep-medication");
+const medikeepSection = document.querySelector("#medikeep-section");
+const medikeepMedicines = document.querySelector("#medikeep-medicines");
 let scanControls;
 let currentRaw;
 
@@ -22,6 +27,72 @@ function button(label, className = "") {
   element.textContent = label;
   if (className) element.className = className;
   return element;
+}
+
+function medicineSummary(medication) {
+  return [medication.dosage, medication.route, medication.frequency].filter(Boolean).join(" · ");
+}
+
+async function loadMediKeep() {
+  try {
+    const medications = await api("/api/v1/medikeep/active-medications");
+    medikeepSection.hidden = false;
+    medikeepMedicines.replaceChildren();
+    if (!medications.length) {
+      medikeepMedicines.textContent = "No active MediKeep medicines found.";
+      return;
+    }
+    medications.forEach(medication => {
+      const card = document.createElement("div");
+      card.className = "medikeep-card";
+      const description = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = medication.name;
+      const details = document.createElement("p");
+      details.textContent = medicineSummary(medication) || "Active medication";
+      description.append(title, details);
+      const importButton = button("Import/link", "secondary compact");
+      importButton.addEventListener("click", async () => {
+        importButton.disabled = true;
+        try {
+          const imported = await api(`/api/v1/medikeep/import/${medication.id}`, { method: "POST" });
+          importButton.textContent = imported.created ? "Imported" : "Linked";
+          await loadPacks();
+        } catch (error) {
+          alert(`Could not import: ${error.message}`);
+          importButton.disabled = false;
+        }
+      });
+      card.append(description, importButton);
+      medikeepMedicines.append(card);
+    });
+  } catch {
+    // MediKeep is deliberately optional: do not show a broken integration
+    // panel when its connection has not been configured.
+    medikeepSection.hidden = true;
+  }
+}
+
+async function showMediKeepSuggestions(productName) {
+  medikeepMedication.replaceChildren();
+  medikeepLink.hidden = true;
+  try {
+    const suggestions = await api(`/api/v1/medikeep/suggestions?name=${encodeURIComponent(productName)}`);
+    if (!suggestions.length) return;
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "No MediKeep link — OTC, new prescription or decide later";
+    medikeepMedication.append(none);
+    suggestions.forEach(medication => {
+      const option = document.createElement("option");
+      option.value = String(medication.id);
+      option.textContent = `${medication.name}${medicineSummary(medication) ? ` — ${medicineSummary(medication)}` : ""}`;
+      medikeepMedication.append(option);
+    });
+    medikeepLink.hidden = false;
+  } catch {
+    medikeepLink.hidden = true;
+  }
 }
 
 function formatEvent(event) {
@@ -162,6 +233,8 @@ async function findProduct(raw) {
     result.textContent = JSON.stringify(decoded, null, 2);
     productMatch.innerHTML = `<strong>${match.name}</strong><br>${match.presentation || match.form || "French catalogue match"}<br><small>${match.holder || ""}</small>`;
     quantity.value = match.quantity_hint || "";
+    productCategory.value = "medicine";
+    await showMediKeepSuggestions(match.name);
     savePack.hidden = false;
   } catch (error) {
     result.textContent = error.message;
@@ -170,6 +243,7 @@ async function findProduct(raw) {
 
 document.querySelector("#parse").addEventListener("click", () => findProduct(document.querySelector("#code").value.trim()));
 document.querySelector("#refresh-packs").addEventListener("click", loadPacks);
+document.querySelector("#refresh-medikeep").addEventListener("click", loadMediKeep);
 
 startCamera.addEventListener("click", async () => {
   if (!window.isSecureContext) {
@@ -215,7 +289,12 @@ document.querySelector("#save").addEventListener("click", async () => {
     const created = await api("/api/v1/packs/from-scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ raw: currentRaw, quantity_initial: Number(quantity.value) }),
+      body: JSON.stringify({
+        raw: currentRaw,
+        quantity_initial: Number(quantity.value),
+        category: productCategory.value,
+        medikeep_medication_id: medikeepMedication.value ? Number(medikeepMedication.value) : null,
+      }),
     });
     saveResult.textContent = created.created ? `Saved ${created.product.name}.` : "This scanned pack is already recorded.";
     await loadPacks();
@@ -225,4 +304,5 @@ document.querySelector("#save").addEventListener("click", async () => {
 });
 
 loadPacks();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.3.2");
+loadMediKeep();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.4.0");

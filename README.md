@@ -41,3 +41,22 @@ codes, but the browser will block camera access.
 ## Data boundaries
 
 DoseKeep stores operational supply data. It does not make prescribing or clinical decisions. Keep production data private, use the Docker volume for persistence and back it up regularly.
+
+## Optional MediKeep import
+
+DoseKeep can read active medicines from MediKeep so you can explicitly import
+or link them. It never creates, edits or stops a MediKeep medication.
+
+Add these as Portainer stack environment variables or secrets:
+
+```text
+DOSEKEEP_MEDIKEEP_URL=http://your-medikeep-host:8885/api/v1
+DOSEKEEP_MEDIKEEP_TOKEN=...              # preferred when available
+# Or, if MediKeep uses its normal login flow:
+DOSEKEEP_MEDIKEEP_USERNAME=...
+DOSEKEEP_MEDIKEEP_PASSWORD=...
+DOSEKEEP_MEDIKEEP_PATIENT_ID=1
+```
+
+The connector uses the token if set; otherwise it obtains a short-lived token
+from the configured username/password. Do not commit these values to Git.

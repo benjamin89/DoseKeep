@@ -79,10 +79,26 @@ class CatalogueProductRead(BaseModel):
     source: str
 
 
+class MediKeepMedicationRead(BaseModel):
+    id: int
+    name: str
+    dosage: str | None = None
+    route: str | None = None
+    frequency: str | None = None
+    status: str
+
+
+class MediKeepImportRead(BaseModel):
+    product: ProductRead
+    created: bool
+
+
 class ScannedPackCreate(BaseModel):
     raw: str
     quantity_initial: int = Field(gt=0)
     obtained_on: date | None = None
+    category: str = Field(default="medicine", pattern="^(medicine|otc|supplement|other)$")
+    medikeep_medication_id: int | None = None
 
 
 class ScannedPackRead(BaseModel):
