@@ -20,6 +20,7 @@ from .schemas import (
     ProductRead,
     ScannedPackCreate,
     ScannedPackRead,
+    StockCorrection,
     SupplyEventCreate,
     SupplyEventRead,
 )
@@ -28,7 +29,7 @@ from .schemas import (
 Base.metadata.create_all(bind=engine)
 ensure_schema()
 
-app = FastAPI(title="DoseKeep", version="0.2.0")
+app = FastAPI(title="DoseKeep", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:8080"],
@@ -75,6 +76,19 @@ def create_product(product: ProductCreate, session: Session = Depends(get_sessio
 @app.get("/api/v1/packs", response_model=list[PackRead])
 def list_packs(session: Session = Depends(get_session)):
     return session.query(Pack).order_by(Pack.expiry_date.is_(None), Pack.expiry_date).all()
+
+
+@app.get("/api/v1/packs/{pack_id}/events", response_model=list[SupplyEventRead])
+def list_pack_events(pack_id: int, session: Session = Depends(get_session)):
+    if not session.get(Pack, pack_id):
+        raise HTTPException(status_code=404, detail="Pack not found")
+    return (
+        session.query(SupplyEvent)
+        .filter(SupplyEvent.pack_id == pack_id)
+        .order_by(SupplyEvent.occurred_at.desc())
+        .limit(10)
+        .all()
+    )
 
 
 @app.post("/api/v1/packs", response_model=PackRead, status_code=201)
@@ -132,6 +146,28 @@ def create_pack_from_scan(scan: ScannedPackCreate, session: Session = Depends(ge
     return {"product": product, "pack": pack, "created": True}
 
 
+@app.post("/api/v1/packs/{pack_id}/stock", response_model=PackRead)
+def correct_pack_stock(pack_id: int, correction: StockCorrection, session: Session = Depends(get_session)):
+    """Record a physical count without inventing historical dose events."""
+    pack = session.get(Pack, pack_id)
+    if not pack:
+        raise HTTPException(status_code=404, detail="Pack not found")
+    previous = pack.quantity_remaining
+    if previous != correction.quantity_remaining:
+        pack.quantity_remaining = correction.quantity_remaining
+        session.add(
+            SupplyEvent(
+                pack_id=pack_id,
+                event_type="correction",
+                quantity=abs(correction.quantity_remaining - previous),
+                notes=correction.notes or f"Physical count adjusted from {previous} to {correction.quantity_remaining}",
+            )
+        )
+    session.commit()
+    session.refresh(pack)
+    return pack
+
+
 @app.post("/api/v1/packs/{pack_id}/events", response_model=SupplyEventRead, status_code=201)
 def add_supply_event(pack_id: int, event: SupplyEventCreate, session: Session = Depends(get_session)):
     pack = session.get(Pack, pack_id)
@@ -146,6 +182,10 @@ def add_supply_event(pack_id: int, event: SupplyEventCreate, session: Session = 
         if pack.quantity_in_dosette < event.quantity:
             raise HTTPException(status_code=409, detail="Insufficient dosette stock")
         pack.quantity_in_dosette -= event.quantity
+    elif event.event_type == "taken_from_pack":
+        if pack.quantity_remaining < event.quantity:
+            raise HTTPException(status_code=409, detail="Insufficient pack stock")
+        pack.quantity_remaining -= event.quantity
     elif event.event_type == "disposed":
         if pack.quantity_remaining < event.quantity:
             raise HTTPException(status_code=409, detail="Insufficient pack stock")

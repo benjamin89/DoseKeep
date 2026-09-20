@@ -8,7 +8,23 @@ textarea, input, button { width: 100%; box-sizing: border-box; margin-top: .5rem
 textarea, input { padding: .75rem; border: 1px solid #9ca3af; border-radius: .5rem; }
 button { border: 0; border-radius: .5rem; padding: .75rem; background: #166534; color: white; font-weight: 700; }
 .secondary { background: #475569; }
+.compact { width: auto; padding: .55rem .8rem; }
 .camera-actions { display: flex; gap: .75rem; }
 .camera-actions button { flex: 1; }
 video { width: 100%; margin-top: 1rem; border-radius: .75rem; background: #111; }
 pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+.section-heading { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
+.section-heading h2 { margin-bottom: .25rem; }
+.section-heading p { margin-top: 0; color: #475569; }
+.pack-card { border: 1px solid #d7e2d6; border-radius: .75rem; padding: 1rem; margin-top: 1rem; }
+.pack-card h3 { margin: 0 0 .35rem; font-size: 1.1rem; }
+.pack-meta { color: #475569; font-size: .9rem; margin: .25rem 0; }
+.stock-number { font-size: 2rem; font-weight: 800; color: #166534; margin: .75rem 0 .15rem; }
+.stock-caption { margin: 0; color: #475569; }
+.stock-row, .dose-actions { display: flex; gap: .6rem; margin-top: .9rem; }
+.stock-row input { margin: 0; min-width: 0; }
+.stock-row button, .dose-actions button { margin: 0; }
+.dose-actions .outline { background: white; color: #334155; border: 1px solid #94a3b8; }
+.recent-events { margin: .9rem 0 0; padding-left: 1.25rem; color: #475569; font-size: .9rem; }
+.fine-print { color: #64748b; font-size: .8rem; text-align: center; }
+@media (max-width: 28rem) { .stock-row, .dose-actions { flex-direction: column; } .compact { white-space: nowrap; } }

@@ -42,7 +42,7 @@ class PackRead(PackCreate):
 
 
 class SupplyEventCreate(BaseModel):
-    event_type: str = Field(pattern="^(dosette_fill|taken|skipped|disposed|correction)$")
+    event_type: str = Field(pattern="^(dosette_fill|taken|taken_from_pack|skipped|disposed|correction)$")
     quantity: int = Field(gt=0)
     notes: str | None = None
 
@@ -53,6 +53,11 @@ class SupplyEventRead(SupplyEventCreate):
     occurred_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class StockCorrection(BaseModel):
+    quantity_remaining: int = Field(ge=0)
+    notes: str | None = None
 
 
 class DecodedCode(BaseModel):

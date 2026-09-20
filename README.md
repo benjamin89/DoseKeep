@@ -2,12 +2,15 @@
 
 DoseKeep is a private, self-hosted companion for tracking medicines, supplements and other health products from pack to dosette. It is deliberately independent of MediKeep, with a future optional link to active medication records.
 
-## What release 0.2 does
+## What release 0.3 does
 
 - stores products, packs and supply events in a persistent SQLite database;
 - scans or pastes GS1 medicine Data Matrix codes for GTIN, serial number, batch and expiry;
 - checks French GTIN/CIP codes against the official public BDPM catalogue and suggests the pack quantity;
 - creates a confirmed pack record, including its serial, batch and expiry;
+- shows active packs with physical stock, expiry and recent supply activity;
+- records a direct-from-pack dose (for medicines such as evening atorvastatin) or a skipped dose;
+- lets you correct a physical tablet count without inventing historical dose events;
 - supports pack-to-dosette allocation and taken/disposed supply events through the REST API;
 - serves a mobile-friendly installable web app;
 - runs as one Docker Compose service.

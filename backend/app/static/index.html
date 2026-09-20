@@ -25,7 +25,7 @@
       <section>
         <h2>Or paste a decoded code</h2>
         <label for="code">Decoded GS1 text</label>
-        <textarea id="code" rows="4" spellcheck="false">(01)03400930330531(21)31PF39M8GW(17)280930(10)8219107</textarea>
+        <textarea id="code" rows="4" spellcheck="false" placeholder="Paste decoded GS1 text here"></textarea>
         <button id="parse">Find product</button>
         <pre id="result" aria-live="polite"></pre>
       </section>
@@ -38,9 +38,16 @@
         <p id="save-result" aria-live="polite"></p>
       </section>
       <section>
-        <h2>Next build step</h2>
-        <p>Dosette filling, dose logging, refill forecasting and MediKeep linking follow this French-pack pilot.</p>
+        <div class="section-heading">
+          <div>
+            <h2>Your packs</h2>
+            <p>Physical stock, expiry and recent dose records.</p>
+          </div>
+          <button id="refresh-packs" class="secondary compact">Refresh</button>
+        </div>
+        <div id="packs" aria-live="polite">Loading packs…</div>
       </section>
+      <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
     </main>
     <script src="/app.js"></script>
   </body>
