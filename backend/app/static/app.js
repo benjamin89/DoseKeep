@@ -133,7 +133,8 @@ async function loadAdministration() {
         const item = document.createElement("article");
         item.className = "due-dose";
         const description = document.createElement("p");
-        description.textContent = `${medicine.name}${medicine.prn_notes ? ` — ${medicine.prn_notes}` : ""}`;
+        const details = [medicine.dosage, medicine.route, medicine.frequency].filter(Boolean).join(" · ");
+        description.textContent = `${medicine.name}${details ? ` — ${details}` : ""}${medicine.prn_notes ? ` — ${medicine.prn_notes}` : ""}`;
         item.append(description);
         const control = button("Record PRN dose", "secondary compact");
         control.addEventListener("click", async () => {
@@ -702,4 +703,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.17.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.18.0");
