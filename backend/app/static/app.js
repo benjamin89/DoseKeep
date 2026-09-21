@@ -73,6 +73,7 @@ async function authenticate(mode) {
 
 function button(label, className = "") {
   const element = document.createElement("button");
+  element.type = "button";
   element.textContent = label;
   if (className) element.className = className;
   return element;
@@ -185,12 +186,23 @@ function renderMedicine(medicine) {
         .filter(input => input !== prn && input.checked)
         .map(input => input.value);
       try {
-        await api(`/api/v1/products/${medicine.product_id}/schedule`, {
+        const updated = await api(`/api/v1/products/${medicine.product_id}/schedule`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ regular_times, as_required: prn.checked, prn_notes: prnNotes.value.trim() || null }),
         });
-        await loadMedicines();
+        medicine.regular_times = updated.regular_times;
+        medicine.as_required = updated.as_required;
+        medicine.prn_notes = updated.prn_notes;
+        const updatedNotes = [];
+        if (medicine.regular_times.length) updatedNotes.push(`regular: ${medicine.regular_times.join(", ")}`);
+        if (medicine.as_required) updatedNotes.push(`when required${medicine.prn_notes ? ` — ${medicine.prn_notes}` : ""}`);
+        if (medicine.active_pack_count) updatedNotes.push(`${medicine.active_pack_count} active pack${medicine.active_pack_count === 1 ? "" : "s"}`);
+        if (medicine.quantity_in_dosette) updatedNotes.push(`${medicine.quantity_in_dosette} in dosette`);
+        if (medicine.linked_to_medikeep) updatedNotes.push("linked to MediKeep");
+        if (medicine.medikeep_status && medicine.medikeep_status !== "active") updatedNotes.push(`MediKeep: ${medicine.medikeep_status}`);
+        detail.textContent = updatedNotes.join(" · ") || "Scan a pack to start stock tracking.";
+        scheduleButton.textContent = "Edit administration plan";
       } catch (error) {
         alert(`Could not save administration plan: ${error.message}`);
         saveSchedule.disabled = false;
@@ -531,4 +543,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.11.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.12.0");
