@@ -38,6 +38,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(512))
     timezone: Mapped[str] = mapped_column(String(80), default="Europe/Paris")
+    administration_times: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     packs: Mapped[list["Pack"]] = relationship(back_populates="user")

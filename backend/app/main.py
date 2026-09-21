@@ -17,6 +17,7 @@ from .gs1 import parse_medicine_code
 from .medikeep import MediKeepUnavailable, active_medications, all_medications, create_medication, normalize_name, suggested_medications
 from .models import MediKeepConnection, MediKeepLink, MedicationSchedule, Pack, Product, ScheduledDose, SupplyEvent, User
 from .schemas import (
+    AdministrationTimeSettings,
     CatalogueProductRead,
     AuthStatus,
     DecodedCode,
@@ -111,6 +112,46 @@ def login_account(payload: UserRegister, request: Request, session: Session = De
 def logout_account(request: Request):
     request.session.clear()
     return {"ok": True}
+
+
+DEFAULT_SLOT_TIMES = {"morning": "08:00", "midday": "12:00", "evening": "19:00", "bedtime": "22:00"}
+
+
+def administration_times(user: User) -> dict[str, str]:
+    try:
+        configured = json.loads(user.administration_times or "{}")
+    except (TypeError, ValueError):
+        configured = {}
+    return {slot: configured.get(slot, default) for slot, default in DEFAULT_SLOT_TIMES.items()}
+
+
+@app.get("/api/v1/settings/administration-times", response_model=AdministrationTimeSettings)
+def get_administration_times(user: User = Depends(current_user)):
+    return administration_times(user)
+
+
+@app.put("/api/v1/settings/administration-times", response_model=AdministrationTimeSettings)
+def update_administration_times(
+    payload: AdministrationTimeSettings,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    user.administration_times = json.dumps(payload.model_dump())
+    zone = user_zone(user)
+    today = datetime.now(timezone.utc).astimezone(zone).date()
+    start = datetime.combine(today, time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+    end = start + timedelta(days=1)
+    # Pending doses are regenerated at the new times; already taken/skipped
+    # records are retained as history.
+    session.query(ScheduledDose).filter(
+        ScheduledDose.user_id == user.id,
+        ScheduledDose.scheduled_for >= start,
+        ScheduledDose.scheduled_for < end,
+        ScheduledDose.administration_time.in_(DEFAULT_SLOT_TIMES),
+        ScheduledDose.status.in_(("due", "snoozed")),
+    ).delete(synchronize_session=False)
+    session.commit()
+    return administration_times(user)
 
 
 @app.post("/api/v1/scan/parse", response_model=DecodedCode)
@@ -459,14 +500,6 @@ def update_medication_schedule(
     return next(item for item in list_medicine_dashboard(user, session) if item["product_id"] == product_id)
 
 
-SLOT_CLOCKS = {
-    "morning": time(8, 0),
-    "midday": time(12, 0),
-    "evening": time(19, 0),
-    "bedtime": time(22, 0),
-}
-
-
 def user_zone(user: User) -> ZoneInfo:
     try:
         return ZoneInfo(user.timezone or "Europe/Paris")
@@ -485,6 +518,7 @@ def generate_today_doses(user: User, session: Session) -> None:
         pass
     links = {item.product_id: item for item in session.query(MediKeepLink).filter_by(user_id=user.id).all()}
     schedules = session.query(MedicationSchedule).filter_by(user_id=user.id).all()
+    slot_times = administration_times(user)
     generated = False
     seen_medikeep_ids = set()
     for schedule in schedules:
@@ -499,9 +533,10 @@ def generate_today_doses(user: User, session: Session) -> None:
             if external and external.status != "active":
                 continue
         for slot in json.loads(schedule.regular_times):
-            clock = SLOT_CLOCKS.get(slot)
-            if not clock:
+            configured_time = slot_times.get(slot)
+            if not configured_time:
                 continue
+            clock = time.fromisoformat(configured_time)
             local_due = datetime.combine(local_today, clock, tzinfo=zone)
             due = local_due.astimezone(timezone.utc).replace(tzinfo=None)
             exists = session.query(ScheduledDose).filter_by(

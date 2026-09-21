@@ -123,12 +123,28 @@
       <section id="page-settings" class="app-page" hidden>
         <h2>Settings</h2>
         <p id="account-settings"></p>
+        <section>
+          <h2>Administration times</h2>
+          <p>These set the due time for regular morning, midday, evening and bedtime doses in your timezone.</p>
+          <form id="administration-times-form">
+            <label for="administration-morning">Morning</label>
+            <input id="administration-morning" type="time" value="08:00" required />
+            <label for="administration-midday">Midday</label>
+            <input id="administration-midday" type="time" value="12:00" required />
+            <label for="administration-evening">Teatime / evening</label>
+            <input id="administration-evening" type="time" value="19:00" required />
+            <label for="administration-bedtime">Bedtime</label>
+            <input id="administration-bedtime" type="time" value="22:00" required />
+            <button type="submit">Save administration times</button>
+            <p id="administration-times-result" aria-live="polite"></p>
+          </form>
+        </section>
         <button id="edit-medikeep-settings" type="button" class="secondary compact">MediKeep connection settings</button>
         <section id="medikeep-setup" hidden>
           <div class="section-heading">
             <div>
               <h2>Connect MediKeep <span class="optional">optional</span></h2>
-              <p>Import or link your active medication list. DoseKeep will only read MediKeep; it will never alter your clinical record.</p>
+              <p>Import or link your medication list. DoseKeep only writes to MediKeep if you explicitly choose to add a confirmed scanned medicine.</p>
             </div>
           </div>
           <form id="medikeep-form">
@@ -151,6 +167,6 @@
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.18.0"></script>
+    <script src="/app.js?v=0.19.0"></script>
   </body>
 </html>

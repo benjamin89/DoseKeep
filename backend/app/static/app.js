@@ -22,6 +22,8 @@ const authResult = document.querySelector("#auth-result");
 const medikeepSetup = document.querySelector("#medikeep-setup");
 const medikeepForm = document.querySelector("#medikeep-form");
 const medikeepSetupResult = document.querySelector("#medikeep-setup-result");
+const administrationTimesForm = document.querySelector("#administration-times-form");
+const administrationTimesResult = document.querySelector("#administration-times-result");
 const administrationContainer = document.querySelector("#administration");
 const pages = {
   medicines: document.querySelector("#page-medicines"),
@@ -59,16 +61,17 @@ async function showSignedIn(status) {
   document.querySelector("#welcome").textContent = `Signed in as ${status.user.email}. Scan a pack, check its expiry, then keep your stock up to date.`;
   document.querySelector("#account-settings").textContent = `Signed in as ${status.user.email}. Your packs and any MediKeep connection are private to this DoseKeep account.`;
   showPage("medicines");
-  await Promise.all([loadMedicines(), loadPacks(), loadMediKeep()]);
+  await Promise.all([loadMedicines(), loadPacks(), loadMediKeep(), loadAdministrationTimes()]);
   await loadMediKeepConnection(status.medikeep_connected);
 }
 
 async function loadAdministration() {
   administrationContainer.textContent = "Loading administration plan…";
   try {
-    const [medicines, scheduledDoses] = await Promise.all([
+    const [medicines, scheduledDoses, configuredTimes] = await Promise.all([
       api("/api/v1/dashboard/medicines"),
       api("/api/v1/doses/today"),
+      api("/api/v1/settings/administration-times"),
     ]);
     const current = medicines.filter(medicine => !medicine.medikeep_status || medicine.medikeep_status === "active");
     const planned = current.filter(medicine => medicine.regular_times.length || medicine.as_required);
@@ -82,7 +85,13 @@ async function loadAdministration() {
     scheduledDoses
       .filter(dose => currentProductIds.has(dose.product_id))
       .forEach(dose => groups.get(dose.administration_time)?.push(dose));
-    const headings = { morning: "Morning", midday: "Midday", evening: "Evening", bedtime: "Bedtime", prn: "As required (PRN)" };
+    const headings = {
+      morning: `Morning · ${configuredTimes.morning}`,
+      midday: `Midday · ${configuredTimes.midday}`,
+      evening: `Teatime / evening · ${configuredTimes.evening}`,
+      bedtime: `Bedtime · ${configuredTimes.bedtime}`,
+      prn: "As required (PRN)",
+    };
     groups.forEach((dosesAtTime, time) => {
       if (time === "prn" || !dosesAtTime.length) return;
       const section = document.createElement("section");
@@ -180,6 +189,17 @@ async function loadMediKeepConnection(knownConnected = false) {
     }
   } catch {
     medikeepSetup.hidden = !knownConnected;
+  }
+}
+
+async function loadAdministrationTimes() {
+  try {
+    const configured = await api("/api/v1/settings/administration-times");
+    ["morning", "midday", "evening", "bedtime"].forEach(slot => {
+      document.querySelector(`#administration-${slot}`).value = configured[slot];
+    });
+  } catch {
+    administrationTimesResult.textContent = "Could not load administration times.";
   }
 }
 
@@ -609,6 +629,23 @@ medikeepForm.addEventListener("submit", async event => {
   }
 });
 
+administrationTimesForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  administrationTimesResult.textContent = "Saving administration times…";
+  const payload = Object.fromEntries(["morning", "midday", "evening", "bedtime"].map(slot => [slot, document.querySelector(`#administration-${slot}`).value]));
+  try {
+    await api("/api/v1/settings/administration-times", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    administrationTimesResult.textContent = "Saved. Pending doses for today have been moved to the new times.";
+    await loadAdministration();
+  } catch (error) {
+    administrationTimesResult.textContent = error.message;
+  }
+});
+
 startCamera.addEventListener("click", async () => {
   if (!window.isSecureContext) {
     result.textContent = "Camera access needs HTTPS (or localhost). Open DoseKeep through a secure URL, then try again.";
@@ -703,4 +740,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.18.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.19.0");

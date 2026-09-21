@@ -37,3 +37,5 @@ def ensure_schema() -> None:
         user_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(users)"))}
         if "timezone" not in user_columns:
             connection.execute(text("ALTER TABLE users ADD COLUMN timezone TEXT NOT NULL DEFAULT 'Europe/Paris'"))
+        if "administration_times" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN administration_times TEXT NOT NULL DEFAULT '{}'"))

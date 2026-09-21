@@ -39,6 +39,13 @@ class AuthStatus(BaseModel):
     medikeep_connected: bool = False
 
 
+class AdministrationTimeSettings(BaseModel):
+    morning: str = Field(default="08:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    midday: str = Field(default="12:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    evening: str = Field(default="19:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    bedtime: str = Field(default="22:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
 class MediKeepConnectionCreate(BaseModel):
     base_url: str = Field(min_length=8, max_length=500)
     patient_id: int = Field(default=1, gt=0)
