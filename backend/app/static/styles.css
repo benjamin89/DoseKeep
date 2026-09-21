@@ -32,6 +32,14 @@ pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .medikeep-card { display: flex; gap: .75rem; justify-content: space-between; align-items: center; border-top: 1px solid #e2e8f0; padding: .85rem 0; }
 .medikeep-card:first-child { border-top: 0; }
 .medikeep-card p { margin: .25rem 0 0; color: #475569; font-size: .9rem; }
+.medicine-card { border-top: 1px solid #d7e2d6; padding: 1rem 0; }
+.medicine-card:first-child { border-top: 0; padding-top: 0; }
+.medicine-card h3 { margin: 0; }
+.medicine-directions { color: #475569; margin: .3rem 0 .6rem; }
+.medicine-stock { display: flex; gap: .65rem; align-items: baseline; }
+.medicine-stock strong { font-size: 1.65rem; color: #166534; }
+.medicine-stock span { color: #475569; }
+.medicine-note { color: #64748b; font-size: .88rem; margin: .45rem 0 0; }
 .fine-print { color: #64748b; font-size: .8rem; text-align: center; }
 .auth-card { margin-top: 8vh; }
 .auth-card h1 { font-size: clamp(2rem, 7vw, 3rem); }

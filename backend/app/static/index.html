@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#14532d" />
-    <link rel="manifest" href="/manifest.webmanifest?v=0.5.0" />
-    <link rel="stylesheet" href="/styles.css?v=0.5.0" />
+    <link rel="manifest" href="/manifest.webmanifest?v=0.6.0" />
+    <link rel="stylesheet" href="/styles.css?v=0.6.0" />
     <title>DoseKeep</title>
   </head>
   <body>
@@ -31,7 +31,17 @@
       <h1>Medication supply, simply tracked.</h1>
       <p id="welcome">Scan a pack, check the expiry, then keep stock and dosette allocations up to date.</p>
       <button id="sign-out" class="secondary compact account-button">Sign out</button>
-      <a class="packs-link" href="#packs">My packs ↓</a>
+      <a class="packs-link" href="#medicines">My medicines ↓</a>
+      <section id="medicine-dashboard">
+        <div class="section-heading">
+          <div>
+            <h2>Your medicines</h2>
+            <p>Directions from MediKeep where linked, with total current stock across your packs.</p>
+          </div>
+          <button id="refresh-medicines" class="secondary compact">Refresh</button>
+        </div>
+        <div id="medicines" aria-live="polite">Loading medicines…</div>
+      </section>
       <section id="medikeep-setup" hidden>
         <div class="section-heading">
           <div>
@@ -94,8 +104,8 @@
       <section>
         <div class="section-heading">
           <div>
-            <h2>Your packs</h2>
-            <p>Physical stock, expiry and recent dose records.</p>
+            <h2>Pack details</h2>
+            <p>Physical stock, expiry and recent dose records behind your medicine totals.</p>
           </div>
           <button id="refresh-packs" class="secondary compact">Refresh</button>
         </div>
@@ -117,6 +127,6 @@
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.5.0"></script>
+    <script src="/app.js?v=0.6.0"></script>
   </body>
 </html>

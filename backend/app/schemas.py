@@ -128,6 +128,22 @@ class MediKeepImportRead(BaseModel):
     created: bool
 
 
+class MedicineOverviewRead(BaseModel):
+    """One user-facing medicine card, independent of individual packs."""
+
+    key: str
+    product_id: int | None = None
+    medikeep_medication_id: int | None = None
+    name: str
+    dosage: str | None = None
+    route: str | None = None
+    frequency: str | None = None
+    quantity_remaining: int = 0
+    quantity_in_dosette: int = 0
+    active_pack_count: int = 0
+    linked_to_medikeep: bool = False
+
+
 class ScannedPackCreate(BaseModel):
     raw: str
     quantity_initial: int = Field(gt=0)

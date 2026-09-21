@@ -12,6 +12,7 @@ const medikeepLink = document.querySelector("#medikeep-link");
 const medikeepMedication = document.querySelector("#medikeep-medication");
 const medikeepSection = document.querySelector("#medikeep-section");
 const medikeepMedicines = document.querySelector("#medikeep-medicines");
+const medicinesContainer = document.querySelector("#medicines");
 const authGate = document.querySelector("#auth-gate");
 const appContent = document.querySelector("#app-content");
 const authForm = document.querySelector("#auth-form");
@@ -38,7 +39,7 @@ async function showSignedIn(status) {
   authGate.hidden = true;
   appContent.hidden = false;
   document.querySelector("#welcome").textContent = `Signed in as ${status.user.email}. Scan a pack, check its expiry, then keep your stock up to date.`;
-  await Promise.all([loadPacks(), loadMediKeep()]);
+  await Promise.all([loadMedicines(), loadPacks(), loadMediKeep()]);
   await loadMediKeepConnection(status.medikeep_connected);
 }
 
@@ -81,6 +82,61 @@ function medicineSummary(medication) {
   return [medication.dosage, medication.route, medication.frequency].filter(Boolean).join(" · ");
 }
 
+async function loadMedicines() {
+  medicinesContainer.textContent = "Loading medicines…";
+  try {
+    const medicines = await api("/api/v1/dashboard/medicines");
+    medicinesContainer.replaceChildren();
+    if (!medicines.length) {
+      medicinesContainer.textContent = "No medicines yet. Scan a pack or connect MediKeep to import your active list.";
+      return;
+    }
+    medicines.forEach(renderMedicine);
+  } catch (error) {
+    medicinesContainer.textContent = `Could not load medicines: ${error.message}`;
+  }
+}
+
+function renderMedicine(medicine) {
+  const card = document.createElement("article");
+  card.className = "medicine-card";
+  const title = document.createElement("h3");
+  title.textContent = medicine.name;
+  const directions = document.createElement("p");
+  directions.className = "medicine-directions";
+  directions.textContent = medicineSummary(medicine) || "Directions not recorded yet";
+  const stock = document.createElement("div");
+  stock.className = "medicine-stock";
+  const amount = document.createElement("strong");
+  amount.textContent = String(medicine.quantity_remaining + medicine.quantity_in_dosette);
+  const caption = document.createElement("span");
+  caption.textContent = medicine.active_pack_count ? "tablets/items available" : "no pack recorded";
+  stock.append(amount, caption);
+  const detail = document.createElement("p");
+  detail.className = "medicine-note";
+  const notes = [];
+  if (medicine.active_pack_count) notes.push(`${medicine.active_pack_count} active pack${medicine.active_pack_count === 1 ? "" : "s"}`);
+  if (medicine.quantity_in_dosette) notes.push(`${medicine.quantity_in_dosette} in dosette`);
+  if (medicine.linked_to_medikeep) notes.push("linked to MediKeep");
+  detail.textContent = notes.join(" · ") || "Scan a pack to start stock tracking.";
+  card.append(title, directions, stock, detail);
+  if (!medicine.product_id && medicine.medikeep_medication_id) {
+    const importButton = button("Track in DoseKeep", "secondary compact");
+    importButton.addEventListener("click", async () => {
+      importButton.disabled = true;
+      try {
+        await api(`/api/v1/medikeep/import/${medicine.medikeep_medication_id}`, { method: "POST" });
+        await Promise.all([loadMedicines(), loadPacks()]);
+      } catch (error) {
+        alert(`Could not add medicine: ${error.message}`);
+        importButton.disabled = false;
+      }
+    });
+    card.append(importButton);
+  }
+  medicinesContainer.append(card);
+}
+
 async function loadMediKeep() {
   try {
     const medications = await api("/api/v1/medikeep/active-medications");
@@ -105,7 +161,7 @@ async function loadMediKeep() {
         try {
           const imported = await api(`/api/v1/medikeep/import/${medication.id}`, { method: "POST" });
           importButton.textContent = imported.created ? "Imported" : "Linked";
-          await loadPacks();
+          await Promise.all([loadMedicines(), loadPacks()]);
         } catch (error) {
           alert(`Could not import: ${error.message}`);
           importButton.disabled = false;
@@ -232,7 +288,7 @@ function renderPack(pack, productName) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ quantity_remaining: Number(countInput.value) }),
       });
-      await loadPacks();
+      await Promise.all([loadPacks(), loadMedicines()]);
     } catch (error) {
       alert(`Could not update count: ${error.message}`);
       saveCount.disabled = false;
@@ -253,7 +309,7 @@ function renderPack(pack, productName) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ event_type: eventType, quantity: 1 }),
       });
-      await loadPacks();
+      await Promise.all([loadPacks(), loadMedicines()]);
     } catch (error) {
       alert(`Could not record this: ${error.message}`);
       control.disabled = false;
@@ -291,6 +347,7 @@ async function findProduct(raw) {
 
 document.querySelector("#parse").addEventListener("click", () => findProduct(document.querySelector("#code").value.trim()));
 document.querySelector("#refresh-packs").addEventListener("click", loadPacks);
+document.querySelector("#refresh-medicines").addEventListener("click", loadMedicines);
 document.querySelector("#refresh-medikeep").addEventListener("click", loadMediKeep);
 document.querySelector("#manage-medikeep").addEventListener("click", () => {
   medikeepSetup.hidden = false;
@@ -329,7 +386,7 @@ medikeepForm.addEventListener("submit", async event => {
     document.querySelector("#medikeep-token").value = "";
     document.querySelector("#medikeep-password").value = "";
     medikeepSetup.hidden = true;
-    await loadMediKeep();
+    await Promise.all([loadMediKeep(), loadMedicines()]);
   } catch (error) {
     medikeepSetupResult.textContent = error.message;
   }
@@ -387,7 +444,7 @@ document.querySelector("#save").addEventListener("click", async () => {
       }),
     });
     saveResult.textContent = created.created ? `Saved ${created.product.name}.` : "This scanned pack is already recorded.";
-    await loadPacks();
+    await Promise.all([loadPacks(), loadMedicines()]);
   } catch (error) {
     saveResult.textContent = error.message;
   }
@@ -408,4 +465,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.5.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.6.0");

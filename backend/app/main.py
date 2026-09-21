@@ -22,6 +22,7 @@ from .schemas import (
     MediKeepConnectionCreate,
     MediKeepConnectionRead,
     MediKeepMedicationRead,
+    MedicineOverviewRead,
     PackCreate,
     PackRead,
     ProductCreate,
@@ -239,6 +240,60 @@ def list_products(user: User = Depends(current_user), session: Session = Depends
         .order_by(Product.name)
         .all()
     )
+
+
+@app.get("/api/v1/dashboard/medicines", response_model=list[MedicineOverviewRead])
+def list_medicine_dashboard(user: User = Depends(current_user), session: Session = Depends(get_session)):
+    """Default user view: medicines first, with packs as supporting detail."""
+    packs = session.query(Pack).filter_by(user_id=user.id, status="active").all()
+    links = session.query(MediKeepLink).filter_by(user_id=user.id).all()
+    product_ids = {pack.product_id for pack in packs} | {link.product_id for link in links}
+    products = {item.id: item for item in session.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
+    active_by_id = {}
+    try:
+        active_by_id = {item.id: item for item in active_medications(user_medikeep_config(user, session))}
+    except (MediKeepUnavailable, HTTPException):
+        # DoseKeep's own stock dashboard remains useful when MediKeep is offline.
+        pass
+
+    links_by_product = {link.product_id: link for link in links}
+    cards: dict[str, dict] = {}
+    for product_id, product in products.items():
+        link = links_by_product.get(product_id)
+        external = active_by_id.get(link.medikeep_medication_id) if link else None
+        matching_packs = [pack for pack in packs if pack.product_id == product_id]
+        cards[f"product:{product_id}"] = {
+            "key": f"product:{product_id}",
+            "product_id": product_id,
+            "medikeep_medication_id": link.medikeep_medication_id if link else None,
+            "name": external.name if external else product.name,
+            "dosage": external.dosage if external else product.strength,
+            "route": external.route if external else None,
+            "frequency": external.frequency if external else None,
+            "quantity_remaining": sum(pack.quantity_remaining for pack in matching_packs),
+            "quantity_in_dosette": sum(pack.quantity_in_dosette for pack in matching_packs),
+            "active_pack_count": len(matching_packs),
+            "linked_to_medikeep": bool(link),
+        }
+
+    # Show all active MediKeep medicines, even before the user has scanned a pack.
+    linked_medication_ids = {link.medikeep_medication_id for link in links}
+    for medication_id, medication in active_by_id.items():
+        if medication_id not in linked_medication_ids:
+            cards[f"medikeep:{medication_id}"] = {
+                "key": f"medikeep:{medication_id}",
+                "product_id": None,
+                "medikeep_medication_id": medication_id,
+                "name": medication.name,
+                "dosage": medication.dosage,
+                "route": medication.route,
+                "frequency": medication.frequency,
+                "quantity_remaining": 0,
+                "quantity_in_dosette": 0,
+                "active_pack_count": 0,
+                "linked_to_medikeep": True,
+            }
+    return sorted(cards.values(), key=lambda item: item["name"].casefold())
 
 
 @app.post("/api/v1/products", response_model=ProductRead, status_code=201)
