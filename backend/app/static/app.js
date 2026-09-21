@@ -127,10 +127,32 @@ async function loadAdministration() {
       heading.textContent = headings.prn;
       section.append(heading);
       prnMedicines.forEach(medicine => {
-        const item = document.createElement("p");
-        item.textContent = `${medicine.name}${medicine.prn_notes ? ` — ${medicine.prn_notes}` : ""}`;
+        const item = document.createElement("article");
+        item.className = "due-dose";
+        const description = document.createElement("p");
+        description.textContent = `${medicine.name}${medicine.prn_notes ? ` — ${medicine.prn_notes}` : ""}`;
+        item.append(description);
+        const control = button("Record PRN dose", "secondary compact");
+        control.addEventListener("click", async () => {
+          control.disabled = true;
+          try {
+            await api(`/api/v1/products/${medicine.product_id}/prn`, { method: "POST" });
+            await Promise.all([loadAdministration(), loadMedicines(), loadPacks()]);
+          } catch (error) {
+            alert(`Could not record PRN dose: ${error.message}`);
+            control.disabled = false;
+          }
+        });
+        item.append(control);
         section.append(item);
       });
+      const recorded = groups.get("prn") || [];
+      if (recorded.length) {
+        const history = document.createElement("p");
+        history.className = "medicine-note";
+        history.textContent = `Recorded today: ${recorded.map(dose => `${dose.medicine_name} at ${new Date(dose.actioned_at || dose.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`).join("; ")}.`;
+        section.append(history);
+      }
       administrationContainer.append(section);
     }
     const unplanned = current.filter(medicine => !medicine.regular_times.length && !medicine.as_required);
@@ -653,4 +675,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.15.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.16.0");

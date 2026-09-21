@@ -521,6 +521,29 @@ def dose_read(dose: ScheduledDose, session: Session) -> dict:
     }
 
 
+def related_product_ids(user: User, product_id: int, session: Session) -> list[int]:
+    """Include historic pack products linked to the same MediKeep medicine."""
+    link = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product_id).first()
+    if not link:
+        return [product_id]
+    return [
+        item.product_id
+        for item in session.query(MediKeepLink)
+        .filter_by(user_id=user.id, medikeep_medication_id=link.medikeep_medication_id)
+        .all()
+    ]
+
+
+def oldest_stock_pack(user: User, product_id: int, session: Session) -> Pack | None:
+    product_ids = related_product_ids(user, product_id, session)
+    return (
+        session.query(Pack)
+        .filter(Pack.user_id == user.id, Pack.product_id.in_(product_ids), Pack.status == "active", Pack.quantity_remaining > 0)
+        .order_by(Pack.expiry_date.is_(None), Pack.expiry_date, Pack.id)
+        .first()
+    )
+
+
 @app.get("/api/v1/doses/today", response_model=list[ScheduledDoseRead])
 def list_today_doses(user: User = Depends(current_user), session: Session = Depends(get_session)):
     generate_today_doses(user, session)
@@ -559,12 +582,7 @@ def action_scheduled_dose(
         dose.actioned_at = now
         dose.notes = payload.notes
     else:
-        pack = (
-            session.query(Pack)
-            .filter(Pack.user_id == user.id, Pack.product_id == dose.product_id, Pack.status == "active", Pack.quantity_remaining > 0)
-            .order_by(Pack.expiry_date.is_(None), Pack.expiry_date, Pack.id)
-            .first()
-        )
+        pack = oldest_stock_pack(user, dose.product_id, session)
         if not pack:
             raise HTTPException(status_code=409, detail="No recorded pack has stock for this medicine")
         pack.quantity_remaining -= 1
@@ -575,6 +593,37 @@ def action_scheduled_dose(
     session.commit()
     session.refresh(dose)
     return dose_read(dose, session)
+
+
+@app.post("/api/v1/products/{product_id}/prn", response_model=ScheduledDoseRead, status_code=201)
+def record_prn_dose(product_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    product_ids = related_product_ids(user, product_id, session)
+    schedules = session.query(MedicationSchedule).filter(
+        MedicationSchedule.user_id == user.id,
+        MedicationSchedule.product_id.in_(product_ids),
+    ).all()
+    if not schedules or not any(schedule.as_required for schedule in schedules):
+        raise HTTPException(status_code=409, detail="This medicine does not have an As required (PRN) plan")
+    pack = oldest_stock_pack(user, product_id, session)
+    if not pack:
+        raise HTTPException(status_code=409, detail="No recorded pack has stock for this medicine")
+    now = datetime.utcnow()
+    pack.quantity_remaining -= 1
+    session.add(SupplyEvent(pack_id=pack.id, event_type="taken_from_pack", quantity=1, notes="PRN dose"))
+    record = ScheduledDose(
+        user_id=user.id,
+        product_id=product_id,
+        administration_time="prn",
+        scheduled_for=now,
+        due_at=now,
+        status="taken",
+        actioned_at=now,
+        notes="Recorded PRN dose",
+    )
+    session.add(record)
+    session.commit()
+    session.refresh(record)
+    return dose_read(record, session)
 
 
 @app.post("/api/v1/products", response_model=ProductRead, status_code=201)
