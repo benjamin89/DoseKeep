@@ -26,16 +26,15 @@ docker compose up --build
 
 Open `http://localhost:8080`. The initial API documentation is at `http://localhost:8080/docs`.
 
-Before the first production start, set a stable, long random
-`DOSEKEEP_MASTER_KEY`. It signs account sessions and encrypts per-user
-MediKeep connection data. Keep it outside Git and do not change it after
-users have connected MediKeep, or their saved connection settings can no
-longer be decrypted.
+On first start, DoseKeep generates a stable instance key inside its persistent
+Docker volume. It signs account sessions and encrypts per-user MediKeep
+connection data, so a Git-based Portainer deployment does **not** need a
+`stack.env` file. Operators who manage secrets outside Docker may optionally
+set a stable `DOSEKEEP_MASTER_KEY` instead; do not change it after users have
+connected MediKeep, or saved connection settings can no longer be decrypted.
 
-For a Portainer Git stack, provide this one **deployment** secret through the
-host/Portainer secret mechanism appropriate to your installation. User
-MediKeep URLs and credentials do **not** go in the stack environment: users
-enter those privately after signing in.
+User MediKeep URLs and credentials do **not** go in the stack environment:
+each user enters them privately after signing in.
 
 ### Phone camera access
 

@@ -6,9 +6,10 @@ services:
     environment:
       DOSEKEEP_DATABASE_URL: ${DOSEKEEP_DATABASE_URL:-sqlite:////data/dosekeep.db}
       DOSEKEEP_ALLOWED_ORIGINS: ${DOSEKEEP_ALLOWED_ORIGINS:-http://localhost:8080}
-      # Deployment secret only. Each user adds their own optional MediKeep
-      # connection after signing in; never put user credentials here.
-      DOSEKEEP_MASTER_KEY: ${DOSEKEEP_MASTER_KEY:?Set a persistent DoseKeep master key in Portainer}
+      # Each user adds their own optional MediKeep connection after signing in.
+      # DOSEKEEP_MASTER_KEY is optional: without it DoseKeep creates an
+      # instance key in the persistent Docker volume on first launch.
+      DOSEKEEP_MASTER_KEY: ${DOSEKEEP_MASTER_KEY:-}
     ports:
       - "${DOSEKEEP_PORT:-8080}:8080"
     volumes:

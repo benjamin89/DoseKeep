@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import secrets
 
 from cryptography.fernet import Fernet
 from fastapi import Depends, HTTPException, Request
@@ -21,9 +22,28 @@ password_hash = PasswordHash.recommended()
 
 def master_key() -> str:
     value = os.getenv("DOSEKEEP_MASTER_KEY", "")
-    if not value:
-        raise RuntimeError("DOSEKEEP_MASTER_KEY must be configured before starting DoseKeep")
-    return value
+    if value:
+        return value
+    # Git-based Portainer stacks cannot safely carry a per-instance secret in
+    # the repository. Create one once in the persistent Docker volume instead.
+    # Operators may still set DOSEKEEP_MASTER_KEY when they manage secrets
+    # outside the container.
+    path = os.getenv("DOSEKEEP_MASTER_KEY_FILE", "/data/.dosekeep-master-key")
+    try:
+        with open(path, "r", encoding="utf-8") as key_file:
+            return key_file.read().strip()
+    except FileNotFoundError:
+        pass
+    generated = secrets.token_urlsafe(48)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError:
+        with open(path, "r", encoding="utf-8") as key_file:
+            return key_file.read().strip()
+    with os.fdopen(descriptor, "w", encoding="utf-8") as key_file:
+        key_file.write(generated)
+    return generated
 
 
 def fernet() -> Fernet:
