@@ -138,7 +138,10 @@ function renderMedicine(medicine) {
     card.append(importButton);
   }
   if (medicine.product_id) {
-    const scheduleButton = button("Set administration plan", "secondary compact");
+    const scheduleButton = button(
+      medicine.regular_times.length || medicine.as_required ? "Edit administration plan" : "Set administration plan",
+      "secondary compact",
+    );
     const editor = document.createElement("div");
     editor.className = "schedule-editor";
     editor.hidden = true;
@@ -177,6 +180,7 @@ function renderMedicine(medicine) {
     saveSchedule.addEventListener("click", async () => {
       saveSchedule.disabled = true;
       editor.hidden = true;
+      editor.remove();
       const regular_times = [...editor.querySelectorAll('input[type="checkbox"]')]
         .filter(input => input !== prn && input.checked)
         .map(input => input.value);
@@ -527,4 +531,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.10.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.11.0");
