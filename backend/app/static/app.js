@@ -167,7 +167,7 @@ function renderMedicine(medicine) {
     const prn = document.createElement("input");
     prn.type = "checkbox";
     prn.checked = medicine.as_required;
-    prnLabel.append(prn, document.createTextNode("May also be taken when required (can be PRN-only)"));
+    prnLabel.append(prn, document.createTextNode("As required (PRN)"));
     editor.append(prnLabel);
     const prnNotes = document.createElement("input");
     prnNotes.placeholder = "Optional PRN guidance, e.g. maximum dose";
@@ -176,6 +176,7 @@ function renderMedicine(medicine) {
     const saveSchedule = button("Save administration plan", "compact");
     saveSchedule.addEventListener("click", async () => {
       saveSchedule.disabled = true;
+      editor.hidden = true;
       const regular_times = [...editor.querySelectorAll('input[type="checkbox"]')]
         .filter(input => input !== prn && input.checked)
         .map(input => input.value);
@@ -185,7 +186,6 @@ function renderMedicine(medicine) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ regular_times, as_required: prn.checked, prn_notes: prnNotes.value.trim() || null }),
         });
-        editor.hidden = true;
         await loadMedicines();
       } catch (error) {
         alert(`Could not save administration plan: ${error.message}`);
@@ -527,4 +527,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.9.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.10.0");
