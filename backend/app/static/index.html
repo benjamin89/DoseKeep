@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#14532d" />
-    <link rel="manifest" href="/manifest.webmanifest?v=0.12.0" />
-    <link rel="stylesheet" href="/styles.css?v=0.12.0" />
+    <link rel="manifest" href="/manifest.webmanifest?v=0.13.0" />
+    <link rel="stylesheet" href="/styles.css?v=0.13.0" />
     <title>DoseKeep</title>
   </head>
   <body>
@@ -31,6 +31,12 @@
       <h1>Medication supply, simply tracked.</h1>
       <p id="welcome">Scan a pack, check the expiry, then keep stock and dosette allocations up to date.</p>
       <button id="sign-out" class="secondary compact account-button">Sign out</button>
+      <nav class="page-nav" aria-label="DoseKeep pages">
+        <button type="button" data-page-target="medicines" class="current">Medicines</button>
+        <button type="button" data-page-target="administration">What to take</button>
+        <button type="button" data-page-target="settings">Settings</button>
+      </nav>
+      <div id="page-medicines" class="app-page">
       <a class="packs-link" href="#medicines">My medicines ↓</a>
       <section id="medicine-dashboard">
         <div class="section-heading">
@@ -41,29 +47,6 @@
           <button id="refresh-medicines" class="secondary compact">Refresh</button>
         </div>
         <div id="medicines" aria-live="polite">Loading medicines…</div>
-      </section>
-      <section id="medikeep-setup" hidden>
-        <div class="section-heading">
-          <div>
-            <h2>Connect MediKeep <span class="optional">optional</span></h2>
-            <p>Import or link your active medication list. DoseKeep will only read MediKeep; it will never alter your clinical record.</p>
-          </div>
-        </div>
-        <form id="medikeep-form">
-          <label for="medikeep-url">MediKeep API URL</label>
-          <input id="medikeep-url" type="url" inputmode="url" placeholder="https://medikeep.example/api/v1" required />
-          <label for="medikeep-patient-id">Patient ID</label>
-          <input id="medikeep-patient-id" type="number" min="1" value="1" required />
-          <label for="medikeep-token">Bearer/API token <span class="optional">preferred, if available</span></label>
-          <input id="medikeep-token" type="password" autocomplete="off" />
-          <p class="hint">Or sign in with your MediKeep account below. One method is enough.</p>
-          <label for="medikeep-username">MediKeep username</label>
-          <input id="medikeep-username" autocomplete="username" />
-          <label for="medikeep-password">MediKeep password</label>
-          <input id="medikeep-password" type="password" autocomplete="current-password" />
-          <button type="submit">Save and test MediKeep connection</button>
-          <p id="medikeep-setup-result" aria-live="polite"></p>
-        </form>
       </section>
       <section>
         <h2>Scan a medicine pack</h2>
@@ -124,9 +107,48 @@
         </div>
         <div id="medikeep-medicines"></div>
       </section>
+      </div>
+      <section id="page-administration" class="app-page" hidden>
+        <div class="section-heading">
+          <div>
+            <h2>What to take</h2>
+            <p>Current planned medicines only. Replaced or stopped MediKeep medicines are excluded here, while their remaining stock stays visible under Medicines.</p>
+          </div>
+          <button id="refresh-administration" type="button" class="secondary compact">Refresh</button>
+        </div>
+        <div id="administration" aria-live="polite">Loading administration plan…</div>
+      </section>
+      <section id="page-settings" class="app-page" hidden>
+        <h2>Settings</h2>
+        <p id="account-settings"></p>
+        <button id="edit-medikeep-settings" type="button" class="secondary compact">MediKeep connection settings</button>
+        <section id="medikeep-setup" hidden>
+          <div class="section-heading">
+            <div>
+              <h2>Connect MediKeep <span class="optional">optional</span></h2>
+              <p>Import or link your active medication list. DoseKeep will only read MediKeep; it will never alter your clinical record.</p>
+            </div>
+          </div>
+          <form id="medikeep-form">
+            <label for="medikeep-url">MediKeep API URL</label>
+            <input id="medikeep-url" type="url" inputmode="url" placeholder="https://medikeep.example/api/v1" required />
+            <label for="medikeep-patient-id">Patient ID</label>
+            <input id="medikeep-patient-id" type="number" min="1" value="1" required />
+            <label for="medikeep-token">Bearer/API token <span class="optional">preferred, if available</span></label>
+            <input id="medikeep-token" type="password" autocomplete="off" />
+            <p class="hint">Or sign in with your MediKeep account below. One method is enough.</p>
+            <label for="medikeep-username">MediKeep username</label>
+            <input id="medikeep-username" autocomplete="username" />
+            <label for="medikeep-password">MediKeep password</label>
+            <input id="medikeep-password" type="password" autocomplete="current-password" />
+            <button type="submit">Save and test MediKeep connection</button>
+            <p id="medikeep-setup-result" aria-live="polite"></p>
+          </form>
+        </section>
+      </section>
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.12.0"></script>
+    <script src="/app.js?v=0.13.0"></script>
   </body>
 </html>

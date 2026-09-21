@@ -20,6 +20,12 @@ const authResult = document.querySelector("#auth-result");
 const medikeepSetup = document.querySelector("#medikeep-setup");
 const medikeepForm = document.querySelector("#medikeep-form");
 const medikeepSetupResult = document.querySelector("#medikeep-setup-result");
+const administrationContainer = document.querySelector("#administration");
+const pages = {
+  medicines: document.querySelector("#page-medicines"),
+  administration: document.querySelector("#page-administration"),
+  settings: document.querySelector("#page-settings"),
+};
 let scanControls;
 let currentRaw;
 
@@ -35,12 +41,66 @@ function showSignedOut() {
   appContent.hidden = true;
 }
 
+function showPage(name) {
+  Object.entries(pages).forEach(([pageName, element]) => { element.hidden = pageName !== name; });
+  document.querySelectorAll("[data-page-target]").forEach(button => {
+    button.classList.toggle("current", button.dataset.pageTarget === name);
+  });
+  if (name === "administration") loadAdministration();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 async function showSignedIn(status) {
   authGate.hidden = true;
   appContent.hidden = false;
   document.querySelector("#welcome").textContent = `Signed in as ${status.user.email}. Scan a pack, check its expiry, then keep your stock up to date.`;
+  document.querySelector("#account-settings").textContent = `Signed in as ${status.user.email}. Your packs and any MediKeep connection are private to this DoseKeep account.`;
+  showPage("medicines");
   await Promise.all([loadMedicines(), loadPacks(), loadMediKeep()]);
   await loadMediKeepConnection(status.medikeep_connected);
+}
+
+async function loadAdministration() {
+  administrationContainer.textContent = "Loading administration plan…";
+  try {
+    const medicines = await api("/api/v1/dashboard/medicines");
+    const current = medicines.filter(medicine => !medicine.medikeep_status || medicine.medikeep_status === "active");
+    const planned = current.filter(medicine => medicine.regular_times.length || medicine.as_required);
+    administrationContainer.replaceChildren();
+    if (!planned.length) {
+      administrationContainer.textContent = "No administration plans yet. Set a plan from the Medicines page.";
+      return;
+    }
+    const groups = new Map([["morning", []], ["midday", []], ["evening", []], ["bedtime", []], ["prn", []]]);
+    planned.forEach(medicine => {
+      medicine.regular_times.forEach(time => groups.get(time).push(medicine));
+      if (medicine.as_required) groups.get("prn").push(medicine);
+    });
+    const headings = { morning: "Morning", midday: "Midday", evening: "Evening", bedtime: "Bedtime", prn: "As required (PRN)" };
+    groups.forEach((medicinesAtTime, time) => {
+      if (!medicinesAtTime.length) return;
+      const section = document.createElement("section");
+      const heading = document.createElement("h3");
+      heading.textContent = headings[time];
+      section.append(heading);
+      medicinesAtTime.forEach(medicine => {
+        const item = document.createElement("p");
+        const details = [medicine.dosage, medicine.route].filter(Boolean).join(" · ");
+        item.textContent = `${medicine.name}${details ? ` — ${details}` : ""}${time === "prn" && medicine.prn_notes ? ` (${medicine.prn_notes})` : ""}`;
+        section.append(item);
+      });
+      administrationContainer.append(section);
+    });
+    const unplanned = current.filter(medicine => !medicine.regular_times.length && !medicine.as_required);
+    if (unplanned.length) {
+      const note = document.createElement("p");
+      note.className = "medicine-note";
+      note.textContent = `${unplanned.length} current medicine${unplanned.length === 1 ? " has" : "s have"} no administration plan yet.`;
+      administrationContainer.append(note);
+    }
+  } catch (error) {
+    administrationContainer.textContent = `Could not load administration plan: ${error.message}`;
+  }
 }
 
 async function loadMediKeepConnection(knownConnected = false) {
@@ -426,8 +486,16 @@ async function findProduct(raw) {
 document.querySelector("#parse").addEventListener("click", () => findProduct(document.querySelector("#code").value.trim()));
 document.querySelector("#refresh-packs").addEventListener("click", loadPacks);
 document.querySelector("#refresh-medicines").addEventListener("click", loadMedicines);
+document.querySelector("#refresh-administration").addEventListener("click", loadAdministration);
 document.querySelector("#refresh-medikeep").addEventListener("click", loadMediKeep);
+document.querySelectorAll("[data-page-target]").forEach(button => {
+  button.addEventListener("click", () => showPage(button.dataset.pageTarget));
+});
 document.querySelector("#manage-medikeep").addEventListener("click", () => {
+  medikeepSetup.hidden = false;
+  showPage("settings");
+});
+document.querySelector("#edit-medikeep-settings").addEventListener("click", () => {
   medikeepSetup.hidden = false;
   medikeepSetup.scrollIntoView({ behavior: "smooth", block: "start" });
 });
@@ -464,7 +532,7 @@ medikeepForm.addEventListener("submit", async event => {
     document.querySelector("#medikeep-token").value = "";
     document.querySelector("#medikeep-password").value = "";
     medikeepSetup.hidden = true;
-    await Promise.all([loadMediKeep(), loadMedicines()]);
+    await Promise.all([loadMediKeep(), loadMedicines(), loadAdministration()]);
   } catch (error) {
     medikeepSetupResult.textContent = error.message;
   }
@@ -543,4 +611,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.12.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.13.0");
