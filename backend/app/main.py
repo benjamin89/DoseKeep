@@ -155,6 +155,39 @@ def migrate_legacy_links(user: User, session: Session) -> None:
         session.commit()
 
 
+def auto_link_clear_matches(user: User, session: Session, products: dict[int, Product], medications: dict) -> None:
+    """Link only a uniquely strong product/medicine match.
+
+    This repairs the common generic-name case (for example, a branded pack
+    containing atorvastatin) without guessing between similarly named drugs.
+    Unclear matches still need the user to choose at scan time.
+    """
+    existing_product_ids = {
+        item.product_id for item in session.query(MediKeepLink).filter_by(user_id=user.id).all()
+    }
+    changed = False
+    for product_id, product in products.items():
+        if product_id in existing_product_ids or product.category != "medicine":
+            continue
+        product_tokens = normalize_name(f"{product.name} {product.strength or ''}")
+        scored = []
+        for medication in medications.values():
+            medication_tokens = normalize_name(f"{medication.name} {medication.dosage or ''}")
+            score = len(product_tokens & medication_tokens)
+            if score:
+                scored.append((score, medication))
+        scored.sort(key=lambda entry: (-entry[0], entry[1].name))
+        if not scored or scored[0][0] < 2:
+            continue
+        best_score, best = scored[0]
+        if len(scored) > 1 and scored[1][0] == best_score:
+            continue
+        session.add(MediKeepLink(user_id=user.id, product_id=product_id, medikeep_medication_id=best.id))
+        changed = True
+    if changed:
+        session.commit()
+
+
 def user_medikeep_config(user: User, session: Session) -> dict:
     connection = session.query(MediKeepConnection).filter_by(user_id=user.id).first()
     if not connection:
@@ -272,10 +305,8 @@ def list_products(user: User = Depends(current_user), session: Session = Depends
 @app.get("/api/v1/dashboard/medicines", response_model=list[MedicineOverviewRead])
 def list_medicine_dashboard(user: User = Depends(current_user), session: Session = Depends(get_session)):
     """Default user view: medicines first, with packs as supporting detail."""
-    migrate_legacy_links(user, session)
     packs = session.query(Pack).filter_by(user_id=user.id, status="active").all()
-    links = session.query(MediKeepLink).filter_by(user_id=user.id).all()
-    product_ids = {pack.product_id for pack in packs} | {link.product_id for link in links}
+    product_ids = {pack.product_id for pack in packs}
     products = {item.id: item for item in session.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
     all_by_id = {}
     try:
@@ -283,6 +314,14 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
     except (MediKeepUnavailable, HTTPException):
         # DoseKeep's own stock dashboard remains useful when MediKeep is offline.
         pass
+
+    migrate_legacy_links(user, session)
+    if all_by_id:
+        auto_link_clear_matches(user, session, products, all_by_id)
+    links = session.query(MediKeepLink).filter_by(user_id=user.id).all()
+    product_ids |= {link.product_id for link in links}
+    if product_ids:
+        products = {item.id: item for item in session.query(Product).filter(Product.id.in_(product_ids)).all()}
 
     links_by_product = {link.product_id: link for link in links}
     schedules = {item.product_id: item for item in session.query(MedicationSchedule).filter_by(user_id=user.id).all()}

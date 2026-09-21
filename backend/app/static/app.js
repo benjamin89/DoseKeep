@@ -145,6 +145,12 @@ function renderMedicine(medicine) {
     const label = document.createElement("strong");
     label.textContent = "Regular administration times";
     editor.append(label);
+    const importedDirections = document.createElement("p");
+    importedDirections.className = "hint";
+    importedDirections.textContent = medicine.linked_to_medikeep
+      ? `MediKeep directions: ${medicineSummary(medicine) || "No directions recorded in MediKeep"}`
+      : "No MediKeep directions linked. Choose the times you use this medicine.";
+    editor.append(importedDirections);
     const selected = new Set(medicine.regular_times);
     ["morning", "midday", "evening", "bedtime"].forEach(time => {
       const wrapper = document.createElement("label");
@@ -161,7 +167,7 @@ function renderMedicine(medicine) {
     const prn = document.createElement("input");
     prn.type = "checkbox";
     prn.checked = medicine.as_required;
-    prnLabel.append(prn, document.createTextNode("May also be taken when required"));
+    prnLabel.append(prn, document.createTextNode("May also be taken when required (can be PRN-only)"));
     editor.append(prnLabel);
     const prnNotes = document.createElement("input");
     prnNotes.placeholder = "Optional PRN guidance, e.g. maximum dose";
@@ -520,4 +526,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.7.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.8.0");

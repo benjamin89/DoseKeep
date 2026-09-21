@@ -88,7 +88,7 @@ def active_medications(config: dict) -> list[MediKeepMedication]:
 def normalize_name(value: str) -> set[str]:
     value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode().casefold()
     value = value.replace("atorvastatine", "atorvastatin")
-    return {token for token in re.findall(r"[a-z0-9]+", value) if len(token) > 2}
+    return {token for token in re.findall(r"[a-z0-9]+", value) if len(token) > 2 or token.isdigit()}
 
 
 def suggested_medications(config: dict, product_name: str) -> list[MediKeepMedication]:
