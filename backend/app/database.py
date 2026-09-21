@@ -32,3 +32,5 @@ def ensure_schema() -> None:
         columns = {row[1] for row in connection.execute(text("PRAGMA table_info(packs)"))}
         if "quantity_in_dosette" not in columns:
             connection.execute(text("ALTER TABLE packs ADD COLUMN quantity_in_dosette INTEGER NOT NULL DEFAULT 0"))
+        if "user_id" not in columns:
+            connection.execute(text("ALTER TABLE packs ADD COLUMN user_id INTEGER"))

@@ -28,12 +28,27 @@ class Product(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     packs: Mapped[list["Pack"]] = relationship(back_populates="product")
+    medikeep_links: Mapped[list["MediKeepLink"]] = relationship(back_populates="product")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    packs: Mapped[list["Pack"]] = relationship(back_populates="user")
+    medikeep_connection: Mapped["MediKeepConnection | None"] = relationship(back_populates="user")
+    medikeep_links: Mapped[list["MediKeepLink"]] = relationship(back_populates="user")
 
 
 class Pack(Base):
     __tablename__ = "packs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
     gtin: Mapped[str | None] = mapped_column(String(14), nullable=True)
     serial_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -47,7 +62,33 @@ class Pack(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     product: Mapped[Product] = relationship(back_populates="packs")
+    user: Mapped[User | None] = relationship(back_populates="packs")
     events: Mapped[list["SupplyEvent"]] = relationship(back_populates="pack")
+
+
+class MediKeepConnection(Base):
+    __tablename__ = "medikeep_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    encrypted_config: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user: Mapped[User] = relationship(back_populates="medikeep_connection")
+
+
+class MediKeepLink(Base):
+    __tablename__ = "medikeep_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    medikeep_medication_id: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    user: Mapped[User] = relationship(back_populates="medikeep_links")
+    product: Mapped[Product] = relationship(back_populates="medikeep_links")
 
 
 class SupplyEvent(Base):

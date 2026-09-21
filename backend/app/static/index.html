@@ -4,16 +4,57 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#14532d" />
-    <link rel="manifest" href="/manifest.webmanifest?v=0.4.0" />
-    <link rel="stylesheet" href="/styles.css?v=0.4.0" />
+    <link rel="manifest" href="/manifest.webmanifest?v=0.5.0" />
+    <link rel="stylesheet" href="/styles.css?v=0.5.0" />
     <title>DoseKeep</title>
   </head>
   <body>
     <main>
+      <section id="auth-gate" class="auth-card" hidden>
+        <p class="eyebrow">DoseKeep</p>
+        <h1>Keep your medicines private and organised.</h1>
+        <p>Create a DoseKeep account on this server, or sign in. Your packs and optional MediKeep connection are kept separate from other accounts.</p>
+        <form id="auth-form">
+          <label for="auth-email">Email address</label>
+          <input id="auth-email" type="email" autocomplete="email" required />
+          <label for="auth-password">Password</label>
+          <input id="auth-password" type="password" autocomplete="current-password" minlength="12" required />
+          <div class="auth-actions">
+            <button id="sign-in" type="submit">Sign in</button>
+            <button id="create-account" type="button" class="secondary">Create account</button>
+          </div>
+          <p id="auth-result" aria-live="polite"></p>
+        </form>
+      </section>
+      <div id="app-content" hidden>
       <p class="eyebrow">DoseKeep</p>
       <h1>Medication supply, simply tracked.</h1>
-      <p>Scan a pack, check the expiry, then keep stock and dosette allocations up to date.</p>
+      <p id="welcome">Scan a pack, check the expiry, then keep stock and dosette allocations up to date.</p>
+      <button id="sign-out" class="secondary compact account-button">Sign out</button>
       <a class="packs-link" href="#packs">My packs ↓</a>
+      <section id="medikeep-setup" hidden>
+        <div class="section-heading">
+          <div>
+            <h2>Connect MediKeep <span class="optional">optional</span></h2>
+            <p>Import or link your active medication list. DoseKeep will only read MediKeep; it will never alter your clinical record.</p>
+          </div>
+        </div>
+        <form id="medikeep-form">
+          <label for="medikeep-url">MediKeep API URL</label>
+          <input id="medikeep-url" type="url" inputmode="url" placeholder="https://medikeep.example/api/v1" required />
+          <label for="medikeep-patient-id">Patient ID</label>
+          <input id="medikeep-patient-id" type="number" min="1" value="1" required />
+          <label for="medikeep-token">Bearer/API token <span class="optional">preferred, if available</span></label>
+          <input id="medikeep-token" type="password" autocomplete="off" />
+          <p class="hint">Or sign in with your MediKeep account below. One method is enough.</p>
+          <label for="medikeep-username">MediKeep username</label>
+          <input id="medikeep-username" autocomplete="username" />
+          <label for="medikeep-password">MediKeep password</label>
+          <input id="medikeep-password" type="password" autocomplete="current-password" />
+          <button type="submit">Save and test MediKeep connection</button>
+          <p id="medikeep-setup-result" aria-live="polite"></p>
+        </form>
+      </section>
       <section>
         <h2>Scan a medicine pack</h2>
         <p id="camera-note">Use your phone camera to read a Data Matrix, then confirm the French catalogue match.</p>
@@ -66,12 +107,16 @@
             <h2>Active MediKeep medicines</h2>
             <p>Import or link the ones you want DoseKeep to track.</p>
           </div>
-          <button id="refresh-medikeep" class="secondary compact">Refresh</button>
+          <div class="heading-actions">
+            <button id="manage-medikeep" class="secondary compact">Connection settings</button>
+            <button id="refresh-medikeep" class="secondary compact">Refresh</button>
+          </div>
         </div>
         <div id="medikeep-medicines"></div>
       </section>
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
+      </div>
     </main>
-    <script src="/app.js?v=0.4.0"></script>
+    <script src="/app.js?v=0.5.0"></script>
   </body>
 </html>

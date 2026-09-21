@@ -15,6 +15,7 @@ button { border: 0; border-radius: .5rem; padding: .75rem; background: #166534; 
 video { width: 100%; margin-top: 1rem; border-radius: .75rem; background: #111; }
 pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .section-heading { display: flex; justify-content: space-between; align-items: start; gap: 1rem; }
+.heading-actions { display: flex; gap: .45rem; flex-wrap: wrap; justify-content: end; }
 .section-heading h2 { margin-bottom: .25rem; }
 .section-heading p { margin-top: 0; color: #475569; }
 .pack-card { border: 1px solid #d7e2d6; border-radius: .75rem; padding: 1rem; margin-top: 1rem; }
@@ -32,4 +33,10 @@ pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .medikeep-card:first-child { border-top: 0; }
 .medikeep-card p { margin: .25rem 0 0; color: #475569; font-size: .9rem; }
 .fine-print { color: #64748b; font-size: .8rem; text-align: center; }
-@media (max-width: 28rem) { .stock-row, .dose-actions { flex-direction: column; } .compact { white-space: nowrap; } }
+.auth-card { margin-top: 8vh; }
+.auth-card h1 { font-size: clamp(2rem, 7vw, 3rem); }
+.auth-actions { display: flex; gap: .6rem; margin-top: 1rem; }
+.auth-actions button { margin: 0; }
+.account-button { float: right; margin-top: -2.2rem; }
+.optional { color: #64748b; font-size: .8em; font-weight: 500; }
+@media (max-width: 28rem) { .stock-row, .dose-actions, .auth-actions { flex-direction: column; } .compact { white-space: nowrap; } }

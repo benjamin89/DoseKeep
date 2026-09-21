@@ -1,21 +1,26 @@
 from datetime import date
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
+from starlette.middleware.sessions import SessionMiddleware
 
+from .auth import current_user, decrypt_config, encrypt_config, hash_password, master_key, verify_password
 from .catalogue import lookup_french_gtin
 from .database import Base, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
 from .medikeep import MediKeepUnavailable, active_medications, normalize_name, suggested_medications
-from .models import Pack, Product, SupplyEvent
+from .models import MediKeepConnection, MediKeepLink, Pack, Product, SupplyEvent, User
 from .schemas import (
     CatalogueProductRead,
+    AuthStatus,
     DecodedCode,
     MediKeepImportRead,
+    MediKeepConnectionCreate,
+    MediKeepConnectionRead,
     MediKeepMedicationRead,
     PackCreate,
     PackRead,
@@ -26,13 +31,20 @@ from .schemas import (
     StockCorrection,
     SupplyEventCreate,
     SupplyEventRead,
+    UserRegister,
 )
 
 
 Base.metadata.create_all(bind=engine)
 ensure_schema()
 
-app = FastAPI(title="DoseKeep", version="0.4.0")
+app = FastAPI(title="DoseKeep", version="0.5.0")
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=master_key(),
+    https_only=True,
+    same_site="lax",
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:8080"],
@@ -46,8 +58,57 @@ def health():
     return {"status": "ok", "service": "dosekeep"}
 
 
+@app.get("/api/auth/status", response_model=AuthStatus)
+def auth_status(request: Request, session: Session = Depends(get_session)):
+    user_id = request.session.get("user_id")
+    user = session.get(User, user_id) if user_id else None
+    if not user:
+        return {"authenticated": False, "user": None, "medikeep_connected": False}
+    return {
+        "authenticated": True,
+        "user": user,
+        "medikeep_connected": bool(session.query(MediKeepConnection).filter_by(user_id=user.id).first()),
+    }
+
+
+@app.post("/api/auth/register", response_model=AuthStatus, status_code=201)
+def register_account(payload: UserRegister, request: Request, session: Session = Depends(get_session)):
+    email = payload.email.strip().lower()
+    if session.query(User).filter_by(email=email).first():
+        raise HTTPException(status_code=409, detail="An account with that email already exists")
+    first_account = session.query(User).count() == 0
+    user = User(email=email, password_hash=hash_password(payload.password))
+    session.add(user)
+    session.flush()
+    # The first account on an existing single-user install owns legacy packs.
+    if first_account:
+        session.query(Pack).filter(Pack.user_id.is_(None)).update({Pack.user_id: user.id})
+    session.commit()
+    request.session["user_id"] = user.id
+    return {"authenticated": True, "user": user, "medikeep_connected": False}
+
+
+@app.post("/api/auth/login", response_model=AuthStatus)
+def login_account(payload: UserRegister, request: Request, session: Session = Depends(get_session)):
+    user = session.query(User).filter_by(email=payload.email.strip().lower()).first()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    request.session["user_id"] = user.id
+    return {
+        "authenticated": True,
+        "user": user,
+        "medikeep_connected": bool(session.query(MediKeepConnection).filter_by(user_id=user.id).first()),
+    }
+
+
+@app.post("/api/auth/logout")
+def logout_account(request: Request):
+    request.session.clear()
+    return {"ok": True}
+
+
 @app.post("/api/v1/scan/parse", response_model=DecodedCode)
-def parse_scan(raw: str):
+def parse_scan(raw: str, user: User = Depends(current_user)):
     try:
         return parse_medicine_code(raw)
     except ValueError as error:
@@ -55,7 +116,7 @@ def parse_scan(raw: str):
 
 
 @app.get("/api/v1/catalogue/fr/{gtin}", response_model=CatalogueProductRead)
-def lookup_french_catalogue(gtin: str):
+def lookup_french_catalogue(gtin: str, user: User = Depends(current_user)):
     product = lookup_french_gtin(gtin)
     if not product:
         raise HTTPException(status_code=404, detail="No active French catalogue match")
@@ -66,64 +127,122 @@ def medikeep_read(medication) -> dict:
     return medication.__dict__
 
 
-@app.get("/api/v1/medikeep/active-medications", response_model=list[MediKeepMedicationRead])
-def list_medikeep_active_medications():
+def user_medikeep_config(user: User, session: Session) -> dict:
+    connection = session.query(MediKeepConnection).filter_by(user_id=user.id).first()
+    if not connection:
+        raise HTTPException(status_code=503, detail="MediKeep has not been connected for this account")
     try:
-        return [medikeep_read(medication) for medication in active_medications()]
+        return decrypt_config(connection.encrypted_config)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Saved MediKeep connection could not be read") from error
+
+
+@app.get("/api/v1/medikeep/connection", response_model=MediKeepConnectionRead)
+def medikeep_connection(user: User = Depends(current_user), session: Session = Depends(get_session)):
+    connection = session.query(MediKeepConnection).filter_by(user_id=user.id).first()
+    if not connection:
+        return {"configured": False, "base_url": None}
+    config = user_medikeep_config(user, session)
+    return {"configured": True, "base_url": config.get("base_url")}
+
+
+@app.post("/api/v1/medikeep/connection", response_model=MediKeepConnectionRead)
+def save_medikeep_connection(
+    payload: MediKeepConnectionCreate,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    try:
+        payload.validate_credentials()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    config = {
+        "base_url": payload.base_url.rstrip("/"),
+        "patient_id": payload.patient_id,
+        "token": payload.token or "",
+        "username": payload.username or "",
+        "password": payload.password or "",
+    }
+    try:
+        active_medications(config)  # Test before persisting credentials.
+    except MediKeepUnavailable as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    connection = session.query(MediKeepConnection).filter_by(user_id=user.id).first()
+    if connection:
+        connection.encrypted_config = encrypt_config(config)
+    else:
+        connection = MediKeepConnection(user_id=user.id, encrypted_config=encrypt_config(config))
+        session.add(connection)
+    session.commit()
+    return {"configured": True, "base_url": config["base_url"]}
+
+
+@app.get("/api/v1/medikeep/active-medications", response_model=list[MediKeepMedicationRead])
+def list_medikeep_active_medications(user: User = Depends(current_user), session: Session = Depends(get_session)):
+    try:
+        return [medikeep_read(medication) for medication in active_medications(user_medikeep_config(user, session))]
     except MediKeepUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.get("/api/v1/medikeep/suggestions", response_model=list[MediKeepMedicationRead])
-def list_medikeep_suggestions(name: str):
+def list_medikeep_suggestions(name: str, user: User = Depends(current_user), session: Session = Depends(get_session)):
     try:
-        return [medikeep_read(medication) for medication in suggested_medications(name)]
+        return [medikeep_read(medication) for medication in suggested_medications(user_medikeep_config(user, session), name)]
     except MediKeepUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @app.post("/api/v1/medikeep/import/{medication_id}", response_model=MediKeepImportRead)
-def import_medikeep_medication(medication_id: int, session: Session = Depends(get_session)):
+def import_medikeep_medication(medication_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
     """Create or explicitly link a DoseKeep product from an active MediKeep record."""
     try:
-        medication = next((item for item in active_medications() if item.id == medication_id), None)
+        medication = next((item for item in active_medications(user_medikeep_config(user, session)) if item.id == medication_id), None)
     except MediKeepUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     if not medication:
         raise HTTPException(status_code=404, detail="Active MediKeep medication not found")
-    product = session.query(Product).filter(Product.medikeep_medication_id == medication.id).first()
+    link = session.query(MediKeepLink).filter_by(user_id=user.id, medikeep_medication_id=medication.id).first()
+    product = link.product if link else None
     created = False
     if not product:
         medication_tokens = normalize_name(f"{medication.name} {medication.dosage or ''}")
-        candidates = session.query(Product).filter(Product.medikeep_medication_id.is_(None)).all()
+        candidates = session.query(Product).all()
         product = next(
             (item for item in candidates if medication_tokens & normalize_name(item.name)),
             None,
         )
-        if product:
-            product.medikeep_medication_id = medication.id
-        else:
+        if not product:
             product = Product(
                 name=medication.name,
                 strength=medication.dosage,
                 category="medicine",
                 catalogue_source="MediKeep (read-only import)",
-                medikeep_medication_id=medication.id,
             )
             session.add(product)
             created = True
+        session.flush()
+        session.add(MediKeepLink(user_id=user.id, product_id=product.id, medikeep_medication_id=medication.id))
     session.commit()
     session.refresh(product)
     return {"product": product, "created": created}
 
 
 @app.get("/api/v1/products", response_model=list[ProductRead])
-def list_products(session: Session = Depends(get_session)):
-    return session.query(Product).order_by(Product.name).all()
+def list_products(user: User = Depends(current_user), session: Session = Depends(get_session)):
+    return (
+        session.query(Product)
+        .outerjoin(Pack, Pack.product_id == Product.id)
+        .outerjoin(MediKeepLink, MediKeepLink.product_id == Product.id)
+        .filter(or_(Pack.user_id == user.id, MediKeepLink.user_id == user.id))
+        .distinct()
+        .order_by(Product.name)
+        .all()
+    )
 
 
 @app.post("/api/v1/products", response_model=ProductRead, status_code=201)
-def create_product(product: ProductCreate, session: Session = Depends(get_session)):
+def create_product(product: ProductCreate, user: User = Depends(current_user), session: Session = Depends(get_session)):
     record = Product(**product.model_dump())
     session.add(record)
     session.commit()
@@ -132,13 +251,13 @@ def create_product(product: ProductCreate, session: Session = Depends(get_sessio
 
 
 @app.get("/api/v1/packs", response_model=list[PackRead])
-def list_packs(session: Session = Depends(get_session)):
-    return session.query(Pack).order_by(Pack.expiry_date.is_(None), Pack.expiry_date).all()
+def list_packs(user: User = Depends(current_user), session: Session = Depends(get_session)):
+    return session.query(Pack).filter(Pack.user_id == user.id).order_by(Pack.expiry_date.is_(None), Pack.expiry_date).all()
 
 
 @app.get("/api/v1/packs/{pack_id}/events", response_model=list[SupplyEventRead])
-def list_pack_events(pack_id: int, session: Session = Depends(get_session)):
-    if not session.get(Pack, pack_id):
+def list_pack_events(pack_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    if not session.query(Pack).filter_by(id=pack_id, user_id=user.id).first():
         raise HTTPException(status_code=404, detail="Pack not found")
     return (
         session.query(SupplyEvent)
@@ -150,10 +269,10 @@ def list_pack_events(pack_id: int, session: Session = Depends(get_session)):
 
 
 @app.post("/api/v1/packs", response_model=PackRead, status_code=201)
-def create_pack(pack: PackCreate, session: Session = Depends(get_session)):
+def create_pack(pack: PackCreate, user: User = Depends(current_user), session: Session = Depends(get_session)):
     if not session.get(Product, pack.product_id):
         raise HTTPException(status_code=404, detail="Product not found")
-    record = Pack(**pack.model_dump(exclude_none=True), obtained_on=pack.obtained_on or date.today())
+    record = Pack(**pack.model_dump(exclude_none=True), user_id=user.id, obtained_on=pack.obtained_on or date.today())
     session.add(record)
     session.commit()
     session.refresh(record)
@@ -161,7 +280,7 @@ def create_pack(pack: PackCreate, session: Session = Depends(get_session)):
 
 
 @app.post("/api/v1/packs/from-scan", response_model=ScannedPackRead, status_code=201)
-def create_pack_from_scan(scan: ScannedPackCreate, session: Session = Depends(get_session)):
+def create_pack_from_scan(scan: ScannedPackCreate, user: User = Depends(current_user), session: Session = Depends(get_session)):
     try:
         decoded = parse_medicine_code(scan.raw)
     except ValueError as error:
@@ -175,13 +294,13 @@ def create_pack_from_scan(scan: ScannedPackCreate, session: Session = Depends(ge
 
     if scan.medikeep_medication_id is not None:
         try:
-            active_ids = {item.id for item in active_medications()}
+            active_ids = {item.id for item in active_medications(user_medikeep_config(user, session))}
         except MediKeepUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         if scan.medikeep_medication_id not in active_ids:
             raise HTTPException(status_code=422, detail="Selected MediKeep medication is not active")
 
-    existing_pack = session.query(Pack).filter(Pack.gtin == gtin, Pack.serial_number == decoded.get("serial_number")).first()
+    existing_pack = session.query(Pack).filter(Pack.user_id == user.id, Pack.gtin == gtin, Pack.serial_number == decoded.get("serial_number")).first()
     if existing_pack:
         return {"product": existing_pack.product, "pack": existing_pack, "created": False}
 
@@ -193,13 +312,15 @@ def create_pack_from_scan(scan: ScannedPackCreate, session: Session = Depends(ge
             category=scan.category,
             barcode=gtin,
             catalogue_source=catalogue_product.source,
-            medikeep_medication_id=scan.medikeep_medication_id,
         )
         session.add(product)
         session.flush()
-    elif scan.medikeep_medication_id is not None:
-        product.medikeep_medication_id = scan.medikeep_medication_id
+    if scan.medikeep_medication_id is not None:
+        existing_link = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product.id).first()
+        if not existing_link:
+            session.add(MediKeepLink(user_id=user.id, product_id=product.id, medikeep_medication_id=scan.medikeep_medication_id))
     pack = Pack(
+        user_id=user.id,
         product_id=product.id,
         gtin=gtin,
         serial_number=decoded.get("serial_number"),
@@ -217,9 +338,9 @@ def create_pack_from_scan(scan: ScannedPackCreate, session: Session = Depends(ge
 
 
 @app.post("/api/v1/packs/{pack_id}/stock", response_model=PackRead)
-def correct_pack_stock(pack_id: int, correction: StockCorrection, session: Session = Depends(get_session)):
+def correct_pack_stock(pack_id: int, correction: StockCorrection, user: User = Depends(current_user), session: Session = Depends(get_session)):
     """Record a physical count without inventing historical dose events."""
-    pack = session.get(Pack, pack_id)
+    pack = session.query(Pack).filter_by(id=pack_id, user_id=user.id).first()
     if not pack:
         raise HTTPException(status_code=404, detail="Pack not found")
     previous = pack.quantity_remaining
@@ -239,8 +360,8 @@ def correct_pack_stock(pack_id: int, correction: StockCorrection, session: Sessi
 
 
 @app.post("/api/v1/packs/{pack_id}/events", response_model=SupplyEventRead, status_code=201)
-def add_supply_event(pack_id: int, event: SupplyEventCreate, session: Session = Depends(get_session)):
-    pack = session.get(Pack, pack_id)
+def add_supply_event(pack_id: int, event: SupplyEventCreate, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    pack = session.query(Pack).filter_by(id=pack_id, user_id=user.id).first()
     if not pack:
         raise HTTPException(status_code=404, detail="Pack not found")
     if event.event_type == "dosette_fill":

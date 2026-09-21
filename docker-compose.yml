@@ -6,11 +6,9 @@ services:
     environment:
       DOSEKEEP_DATABASE_URL: ${DOSEKEEP_DATABASE_URL:-sqlite:////data/dosekeep.db}
       DOSEKEEP_ALLOWED_ORIGINS: ${DOSEKEEP_ALLOWED_ORIGINS:-http://localhost:8080}
-      DOSEKEEP_MEDIKEEP_URL: ${DOSEKEEP_MEDIKEEP_URL:-}
-      DOSEKEEP_MEDIKEEP_TOKEN: ${DOSEKEEP_MEDIKEEP_TOKEN:-}
-      DOSEKEEP_MEDIKEEP_USERNAME: ${DOSEKEEP_MEDIKEEP_USERNAME:-}
-      DOSEKEEP_MEDIKEEP_PASSWORD: ${DOSEKEEP_MEDIKEEP_PASSWORD:-}
-      DOSEKEEP_MEDIKEEP_PATIENT_ID: ${DOSEKEEP_MEDIKEEP_PATIENT_ID:-1}
+      # Deployment secret only. Each user adds their own optional MediKeep
+      # connection after signing in; never put user credentials here.
+      DOSEKEEP_MASTER_KEY: ${DOSEKEEP_MASTER_KEY:?Set a persistent DoseKeep master key in Portainer}
     ports:
       - "${DOSEKEEP_PORT:-8080}:8080"
     volumes:

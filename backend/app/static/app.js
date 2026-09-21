@@ -12,6 +12,13 @@ const medikeepLink = document.querySelector("#medikeep-link");
 const medikeepMedication = document.querySelector("#medikeep-medication");
 const medikeepSection = document.querySelector("#medikeep-section");
 const medikeepMedicines = document.querySelector("#medikeep-medicines");
+const authGate = document.querySelector("#auth-gate");
+const appContent = document.querySelector("#app-content");
+const authForm = document.querySelector("#auth-form");
+const authResult = document.querySelector("#auth-result");
+const medikeepSetup = document.querySelector("#medikeep-setup");
+const medikeepForm = document.querySelector("#medikeep-form");
+const medikeepSetupResult = document.querySelector("#medikeep-setup-result");
 let scanControls;
 let currentRaw;
 
@@ -20,6 +27,47 @@ async function api(path, options = {}) {
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.detail || "Request failed");
   return payload;
+}
+
+function showSignedOut() {
+  authGate.hidden = false;
+  appContent.hidden = true;
+}
+
+async function showSignedIn(status) {
+  authGate.hidden = true;
+  appContent.hidden = false;
+  document.querySelector("#welcome").textContent = `Signed in as ${status.user.email}. Scan a pack, check its expiry, then keep your stock up to date.`;
+  await Promise.all([loadPacks(), loadMediKeep()]);
+  await loadMediKeepConnection(status.medikeep_connected);
+}
+
+async function loadMediKeepConnection(knownConnected = false) {
+  try {
+    const connection = await api("/api/v1/medikeep/connection");
+    medikeepSetup.hidden = connection.configured;
+    if (connection.configured) {
+      document.querySelector("#medikeep-url").value = connection.base_url || "";
+    }
+  } catch {
+    medikeepSetup.hidden = !knownConnected;
+  }
+}
+
+async function authenticate(mode) {
+  const email = document.querySelector("#auth-email").value.trim();
+  const password = document.querySelector("#auth-password").value;
+  authResult.textContent = mode === "register" ? "Creating account…" : "Signing in…";
+  try {
+    const status = await api(`/api/auth/${mode}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    await showSignedIn(status);
+  } catch (error) {
+    authResult.textContent = error.message;
+  }
 }
 
 function button(label, className = "") {
@@ -244,6 +292,48 @@ async function findProduct(raw) {
 document.querySelector("#parse").addEventListener("click", () => findProduct(document.querySelector("#code").value.trim()));
 document.querySelector("#refresh-packs").addEventListener("click", loadPacks);
 document.querySelector("#refresh-medikeep").addEventListener("click", loadMediKeep);
+document.querySelector("#manage-medikeep").addEventListener("click", () => {
+  medikeepSetup.hidden = false;
+  medikeepSetup.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
+authForm.addEventListener("submit", event => {
+  event.preventDefault();
+  authenticate("login");
+});
+document.querySelector("#create-account").addEventListener("click", () => authenticate("register"));
+document.querySelector("#sign-out").addEventListener("click", async () => {
+  await api("/api/auth/logout", { method: "POST" });
+  authForm.reset();
+  authResult.textContent = "";
+  showSignedOut();
+});
+
+medikeepForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  medikeepSetupResult.textContent = "Testing MediKeep connection…";
+  const payload = {
+    base_url: document.querySelector("#medikeep-url").value.trim(),
+    patient_id: Number(document.querySelector("#medikeep-patient-id").value),
+    token: document.querySelector("#medikeep-token").value.trim() || null,
+    username: document.querySelector("#medikeep-username").value.trim() || null,
+    password: document.querySelector("#medikeep-password").value || null,
+  };
+  try {
+    await api("/api/v1/medikeep/connection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    medikeepSetupResult.textContent = "MediKeep connected. Your settings are encrypted in DoseKeep.";
+    document.querySelector("#medikeep-token").value = "";
+    document.querySelector("#medikeep-password").value = "";
+    medikeepSetup.hidden = true;
+    await loadMediKeep();
+  } catch (error) {
+    medikeepSetupResult.textContent = error.message;
+  }
+});
 
 startCamera.addEventListener("click", async () => {
   if (!window.isSecureContext) {
@@ -303,6 +393,19 @@ document.querySelector("#save").addEventListener("click", async () => {
   }
 });
 
-loadPacks();
-loadMediKeep();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.4.0");
+async function bootstrap() {
+  try {
+    const status = await api("/api/auth/status");
+    if (status.authenticated) {
+      await showSignedIn(status);
+    } else {
+      showSignedOut();
+    }
+  } catch {
+    authResult.textContent = "DoseKeep could not load. Check the server connection and try again.";
+    showSignedOut();
+  }
+}
+
+bootstrap();
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.5.0");

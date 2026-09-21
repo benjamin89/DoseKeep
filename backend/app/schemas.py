@@ -21,6 +21,41 @@ class ProductRead(ProductCreate):
     model_config = {"from_attributes": True}
 
 
+class UserRegister(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=12, max_length=256)
+
+
+class UserRead(BaseModel):
+    id: int
+    email: str
+
+    model_config = {"from_attributes": True}
+
+
+class AuthStatus(BaseModel):
+    authenticated: bool
+    user: UserRead | None = None
+    medikeep_connected: bool = False
+
+
+class MediKeepConnectionCreate(BaseModel):
+    base_url: str = Field(min_length=8, max_length=500)
+    patient_id: int = Field(default=1, gt=0)
+    token: str | None = None
+    username: str | None = None
+    password: str | None = None
+
+    def validate_credentials(self) -> None:
+        if not self.token and not (self.username and self.password):
+            raise ValueError("Provide a bearer token or a username and password")
+
+
+class MediKeepConnectionRead(BaseModel):
+    configured: bool
+    base_url: str | None = None
+
+
 class PackCreate(BaseModel):
     product_id: int
     gtin: str | None = None

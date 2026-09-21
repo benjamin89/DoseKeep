@@ -8,7 +8,6 @@ its own local product record.
 from __future__ import annotations
 
 import json
-import os
 import re
 import unicodedata
 import urllib.parse
@@ -30,31 +29,17 @@ class MediKeepMedication:
     status: str
 
 
-def _base_url() -> str:
-    base = os.getenv("DOSEKEEP_MEDIKEEP_URL", "").strip().rstrip("/")
-    if not base:
-        raise MediKeepUnavailable("MediKeep connection is not configured")
-    return base
-
-
-def _patient_id() -> int:
-    try:
-        return int(os.getenv("DOSEKEEP_MEDIKEEP_PATIENT_ID", "1"))
-    except ValueError as error:
-        raise MediKeepUnavailable("MediKeep patient ID must be a number") from error
-
-
-def _token(base: str) -> str:
-    configured = os.getenv("DOSEKEEP_MEDIKEEP_TOKEN", "").strip()
+def _token(config: dict) -> str:
+    configured = (config.get("token") or "").strip()
     if configured:
         return configured
-    username = os.getenv("DOSEKEEP_MEDIKEEP_USERNAME", "").strip()
-    password = os.getenv("DOSEKEEP_MEDIKEEP_PASSWORD", "")
+    username = (config.get("username") or "").strip()
+    password = config.get("password") or ""
     if not username or not password:
         raise MediKeepUnavailable("Set a MediKeep bearer token or username and password")
     payload = urllib.parse.urlencode({"username": username, "password": password}).encode()
     request = urllib.request.Request(
-        f"{base}/auth/login",
+        f"{config['base_url'].rstrip('/')}/auth/login",
         data=payload,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
@@ -65,11 +50,17 @@ def _token(base: str) -> str:
         raise MediKeepUnavailable("Could not authenticate to MediKeep") from error
 
 
-def active_medications() -> list[MediKeepMedication]:
-    base = _base_url()
-    token = _token(base)
+def active_medications(config: dict) -> list[MediKeepMedication]:
+    base = (config.get("base_url") or "").strip().rstrip("/")
+    if not base:
+        raise MediKeepUnavailable("MediKeep connection is not configured")
+    try:
+        patient_id = int(config.get("patient_id", 1))
+    except (TypeError, ValueError) as error:
+        raise MediKeepUnavailable("MediKeep patient ID must be a number") from error
+    token = _token(config)
     request = urllib.request.Request(
-        f"{base}/medications/?patient_id={_patient_id()}",
+        f"{base}/medications/?patient_id={patient_id}",
         headers={"Authorization": f"Bearer {token}"},
     )
     try:
@@ -97,10 +88,10 @@ def normalize_name(value: str) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9]+", value) if len(token) > 2}
 
 
-def suggested_medications(product_name: str) -> list[MediKeepMedication]:
+def suggested_medications(config: dict, product_name: str) -> list[MediKeepMedication]:
     product_tokens = normalize_name(product_name)
     suggestions: list[tuple[int, MediKeepMedication]] = []
-    for medication in active_medications():
+    for medication in active_medications(config):
         medication_tokens = normalize_name(f"{medication.name} {medication.dosage or ''}")
         overlap = len(product_tokens & medication_tokens)
         if overlap:
