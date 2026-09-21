@@ -3,6 +3,8 @@ const video = document.querySelector("#camera");
 const startCamera = document.querySelector("#start-camera");
 const stopCamera = document.querySelector("#stop-camera");
 const savePack = document.querySelector("#save-pack");
+const addToMediKeep = document.querySelector("#add-to-medikeep");
+const addToMediKeepResult = document.querySelector("#add-to-medikeep-result");
 const productMatch = document.querySelector("#product-match");
 const quantity = document.querySelector("#quantity");
 const saveResult = document.querySelector("#save-result");
@@ -27,6 +29,7 @@ const pages = {
   settings: document.querySelector("#page-settings"),
 };
 let scanControls;
+let savedScanProductId = null;
 let currentRaw;
 
 async function api(path, options = {}) {
@@ -531,6 +534,9 @@ function renderPack(pack, productName) {
 
 async function findProduct(raw) {
   currentRaw = raw;
+  savedScanProductId = null;
+  addToMediKeep.hidden = true;
+  addToMediKeepResult.textContent = "";
   result.textContent = "Reading pack code…";
   savePack.hidden = true;
   try {
@@ -653,10 +659,31 @@ document.querySelector("#save").addEventListener("click", async () => {
         medikeep_medication_id: medikeepMedication.value ? Number(medikeepMedication.value) : null,
       }),
     });
+    savedScanProductId = created.product.id;
     saveResult.textContent = created.created ? `Saved ${created.product.name}.` : "This scanned pack is already recorded.";
+    addToMediKeep.hidden = Boolean(medikeepMedication.value);
+    if (!addToMediKeep.hidden) {
+      addToMediKeepResult.textContent = "Optional: add this as a new active medicine in MediKeep. Review its directions and status there afterwards.";
+    }
     await Promise.all([loadPacks(), loadMedicines()]);
   } catch (error) {
     saveResult.textContent = error.message;
+  }
+});
+
+addToMediKeep.addEventListener("click", async () => {
+  if (!savedScanProductId) return;
+  if (!confirm("Add this as a new active medicine in MediKeep? DoseKeep will link it afterwards. You should review directions and status in MediKeep.")) return;
+  addToMediKeep.disabled = true;
+  addToMediKeepResult.textContent = "Adding to MediKeep…";
+  try {
+    const medication = await api(`/api/v1/products/${savedScanProductId}/medikeep`, { method: "POST" });
+    addToMediKeep.hidden = true;
+    addToMediKeepResult.textContent = `Added and linked to MediKeep as ${medication.name}.`;
+    await Promise.all([loadMediKeep(), loadMedicines(), loadAdministration()]);
+  } catch (error) {
+    addToMediKeepResult.textContent = `Could not add to MediKeep: ${error.message}`;
+    addToMediKeep.disabled = false;
   }
 });
 
@@ -675,4 +702,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.16.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.17.0");

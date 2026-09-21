@@ -1,8 +1,8 @@
-"""Optional, read-only MediKeep connector.
+"""Optional MediKeep connector.
 
-DoseKeep never writes medication records back to MediKeep. It only reads the
-current user's active list, then stores an optional MediKeep medication ID on
-its own local product record.
+DoseKeep normally reads a user's MediKeep list. A user may explicitly choose
+to create a medicine from a confirmed pack scan; that is the only write path
+and it always leaves clinical directions for review in MediKeep.
 """
 
 from __future__ import annotations
@@ -102,3 +102,43 @@ def suggested_medications(config: dict, product_name: str) -> list[MediKeepMedic
         if overlap:
             suggestions.append((overlap, medication))
     return [medication for _, medication in sorted(suggestions, key=lambda entry: (-entry[0], entry[1].name))]
+
+
+def create_medication(config: dict, *, name: str, dosage: str | None, category: str) -> MediKeepMedication:
+    """Create a MediKeep medicine only after an explicit DoseKeep confirmation."""
+    base = (config.get("base_url") or "").strip().rstrip("/")
+    if not base:
+        raise MediKeepUnavailable("MediKeep connection is not configured")
+    try:
+        patient_id = int(config.get("patient_id", 1))
+    except (TypeError, ValueError) as error:
+        raise MediKeepUnavailable("MediKeep patient ID must be a number") from error
+    medication_type = {"medicine": "prescription", "otc": "otc", "supplement": "supplement", "other": "otc"}.get(category, "otc")
+    payload = {
+        "patient_id": patient_id,
+        "medication_name": name,
+        "medication_type": medication_type,
+        "status": "active",
+        "notes": "Added from a confirmed DoseKeep pack scan. Review directions and status.",
+    }
+    if dosage:
+        payload["dosage"] = dosage
+    request = urllib.request.Request(
+        f"{base}/medications/",
+        data=json.dumps(payload).encode(),
+        headers={"Authorization": f"Bearer {_token(config)}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            record = json.loads(response.read().decode())
+    except Exception as error:
+        raise MediKeepUnavailable("Could not create the medicine in MediKeep") from error
+    return MediKeepMedication(
+        id=int(record["id"]),
+        name=record.get("medication_name") or name,
+        dosage=record.get("dosage") or dosage,
+        route=record.get("route") or None,
+        frequency=record.get("frequency") or None,
+        status=record.get("status") or "active",
+    )

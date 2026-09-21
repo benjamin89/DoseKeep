@@ -14,7 +14,7 @@ from .auth import current_user, decrypt_config, encrypt_config, hash_password, m
 from .catalogue import lookup_french_gtin
 from .database import Base, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
-from .medikeep import MediKeepUnavailable, active_medications, all_medications, normalize_name, suggested_medications
+from .medikeep import MediKeepUnavailable, active_medications, all_medications, create_medication, normalize_name, suggested_medications
 from .models import MediKeepConnection, MediKeepLink, MedicationSchedule, Pack, Product, ScheduledDose, SupplyEvent, User
 from .schemas import (
     CatalogueProductRead,
@@ -290,6 +290,32 @@ def import_medikeep_medication(medication_id: int, user: User = Depends(current_
     session.commit()
     session.refresh(product)
     return {"product": product, "created": created}
+
+
+@app.post("/api/v1/products/{product_id}/medikeep", response_model=MediKeepMedicationRead, status_code=201)
+def create_and_link_medikeep_medication(product_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    """Explicitly add a confirmed DoseKeep product to MediKeep, then link it."""
+    product = session.get(Product, product_id)
+    owned = product and (
+        session.query(Pack).filter_by(user_id=user.id, product_id=product_id).first()
+        or session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product_id).first()
+    )
+    if not owned:
+        raise HTTPException(status_code=404, detail="Product not found")
+    if session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product_id).first():
+        raise HTTPException(status_code=409, detail="This DoseKeep product is already linked to MediKeep")
+    try:
+        medication = create_medication(
+            user_medikeep_config(user, session),
+            name=product.name,
+            dosage=product.strength,
+            category=product.category,
+        )
+    except MediKeepUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    session.add(MediKeepLink(user_id=user.id, product_id=product.id, medikeep_medication_id=medication.id))
+    session.commit()
+    return medikeep_read(medication)
 
 
 @app.get("/api/v1/products", response_model=list[ProductRead])
