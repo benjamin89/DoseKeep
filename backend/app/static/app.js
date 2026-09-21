@@ -63,7 +63,10 @@ async function showSignedIn(status) {
 async function loadAdministration() {
   administrationContainer.textContent = "Loading administration plan…";
   try {
-    const medicines = await api("/api/v1/dashboard/medicines");
+    const [medicines, scheduledDoses] = await Promise.all([
+      api("/api/v1/dashboard/medicines"),
+      api("/api/v1/doses/today"),
+    ]);
     const current = medicines.filter(medicine => !medicine.medikeep_status || medicine.medikeep_status === "active");
     const planned = current.filter(medicine => medicine.regular_times.length || medicine.as_required);
     administrationContainer.replaceChildren();
@@ -71,26 +74,65 @@ async function loadAdministration() {
       administrationContainer.textContent = "No administration plans yet. Set a plan from the Medicines page.";
       return;
     }
+    const currentProductIds = new Set(current.map(medicine => medicine.product_id).filter(Boolean));
     const groups = new Map([["morning", []], ["midday", []], ["evening", []], ["bedtime", []], ["prn", []]]);
-    planned.forEach(medicine => {
-      medicine.regular_times.forEach(time => groups.get(time).push(medicine));
-      if (medicine.as_required) groups.get("prn").push(medicine);
-    });
+    scheduledDoses
+      .filter(dose => currentProductIds.has(dose.product_id))
+      .forEach(dose => groups.get(dose.administration_time)?.push(dose));
     const headings = { morning: "Morning", midday: "Midday", evening: "Evening", bedtime: "Bedtime", prn: "As required (PRN)" };
-    groups.forEach((medicinesAtTime, time) => {
-      if (!medicinesAtTime.length) return;
+    groups.forEach((dosesAtTime, time) => {
+      if (time === "prn" || !dosesAtTime.length) return;
       const section = document.createElement("section");
       const heading = document.createElement("h3");
       heading.textContent = headings[time];
       section.append(heading);
-      medicinesAtTime.forEach(medicine => {
-        const item = document.createElement("p");
-        const details = [medicine.dosage, medicine.route].filter(Boolean).join(" · ");
-        item.textContent = `${medicine.name}${details ? ` — ${details}` : ""}${time === "prn" && medicine.prn_notes ? ` (${medicine.prn_notes})` : ""}`;
+      dosesAtTime.forEach(dose => {
+        const item = document.createElement("article");
+        item.className = "due-dose";
+        const description = document.createElement("p");
+        const details = [dose.dosage, dose.route].filter(Boolean).join(" · ");
+        description.textContent = `${dose.medicine_name}${details ? ` — ${details}` : ""} · ${dose.status}`;
+        item.append(description);
+        if (["due", "snoozed"].includes(dose.status)) {
+          const actions = document.createElement("div");
+          actions.className = "dose-actions";
+          [["Taken", "taken"], ["Skip", "skipped"], ["Snooze 15 min", "snooze"]].forEach(([label, action]) => {
+            const control = button(label, action === "skipped" ? "outline" : "secondary compact");
+            control.addEventListener("click", async () => {
+              control.disabled = true;
+              try {
+                await api(`/api/v1/doses/${dose.id}/action`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action }),
+                });
+                await Promise.all([loadAdministration(), loadMedicines(), loadPacks()]);
+              } catch (error) {
+                alert(`Could not record dose: ${error.message}`);
+                control.disabled = false;
+              }
+            });
+            actions.append(control);
+          });
+          item.append(actions);
+        }
         section.append(item);
       });
       administrationContainer.append(section);
     });
+    const prnMedicines = planned.filter(medicine => medicine.as_required);
+    if (prnMedicines.length) {
+      const section = document.createElement("section");
+      const heading = document.createElement("h3");
+      heading.textContent = headings.prn;
+      section.append(heading);
+      prnMedicines.forEach(medicine => {
+        const item = document.createElement("p");
+        item.textContent = `${medicine.name}${medicine.prn_notes ? ` — ${medicine.prn_notes}` : ""}`;
+        section.append(item);
+      });
+      administrationContainer.append(section);
+    }
     const unplanned = current.filter(medicine => !medicine.regular_times.length && !medicine.as_required);
     if (unplanned.length) {
       const note = document.createElement("p");
@@ -611,4 +653,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.14.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.15.0");

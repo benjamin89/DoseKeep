@@ -37,12 +37,14 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(512))
+    timezone: Mapped[str] = mapped_column(String(80), default="Europe/Paris")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     packs: Mapped[list["Pack"]] = relationship(back_populates="user")
     medikeep_connection: Mapped["MediKeepConnection | None"] = relationship(back_populates="user")
     medikeep_links: Mapped[list["MediKeepLink"]] = relationship(back_populates="user")
     medication_schedules: Mapped[list["MedicationSchedule"]] = relationship(back_populates="user")
+    scheduled_doses: Mapped[list["ScheduledDose"]] = relationship(back_populates="user")
 
 
 class Pack(Base):
@@ -107,6 +109,26 @@ class MedicationSchedule(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user: Mapped[User] = relationship(back_populates="medication_schedules")
+    product: Mapped[Product] = relationship()
+
+
+class ScheduledDose(Base):
+    """A concrete administration opportunity, generated from a regular plan."""
+
+    __tablename__ = "scheduled_doses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    administration_time: Mapped[str] = mapped_column(String(20))
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime, index=True)
+    due_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="due", index=True)
+    actioned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    user: Mapped[User] = relationship(back_populates="scheduled_doses")
     product: Mapped[Product] = relationship()
 
 

@@ -159,6 +159,27 @@ class MedicationScheduleUpdate(BaseModel):
             raise ValueError("Administration times must be morning, midday, evening or bedtime")
 
 
+class ScheduledDoseRead(BaseModel):
+    id: int
+    product_id: int
+    medicine_name: str
+    dosage: str | None = None
+    route: str | None = None
+    administration_time: str
+    scheduled_for: datetime
+    due_at: datetime
+    status: str
+    actioned_at: datetime | None = None
+    notes: str | None = None
+    stock_available: int = 0
+
+
+class ScheduledDoseAction(BaseModel):
+    action: str = Field(pattern="^(taken|skipped|snooze)$")
+    snooze_minutes: int = Field(default=15, ge=5, le=240)
+    notes: str | None = Field(default=None, max_length=500)
+
+
 class ScannedPackCreate(BaseModel):
     raw: str
     quantity_initial: int = Field(gt=0)

@@ -47,6 +47,9 @@ pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .schedule-editor[hidden] { display: none !important; }
 .schedule-option { display: flex; align-items: center; gap: .5rem; color: #334155; }
 .schedule-option input { width: auto; margin: 0; }
+.due-dose { border-top: 1px solid #d7e2d6; padding: .65rem 0; }
+.due-dose:first-of-type { border-top: 0; }
+.due-dose p { margin: 0; }
 .fine-print { color: #64748b; font-size: .8rem; text-align: center; }
 .auth-card { margin-top: 8vh; }
 .auth-card h1 { font-size: clamp(2rem, 7vw, 3rem); }

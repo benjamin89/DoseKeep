@@ -34,3 +34,6 @@ def ensure_schema() -> None:
             connection.execute(text("ALTER TABLE packs ADD COLUMN quantity_in_dosette INTEGER NOT NULL DEFAULT 0"))
         if "user_id" not in columns:
             connection.execute(text("ALTER TABLE packs ADD COLUMN user_id INTEGER"))
+        user_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(users)"))}
+        if "timezone" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN timezone TEXT NOT NULL DEFAULT 'Europe/Paris'"))

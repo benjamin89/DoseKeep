@@ -1,6 +1,7 @@
 import json
-from datetime import date
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +15,7 @@ from .catalogue import lookup_french_gtin
 from .database import Base, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
 from .medikeep import MediKeepUnavailable, active_medications, all_medications, normalize_name, suggested_medications
-from .models import MediKeepConnection, MediKeepLink, MedicationSchedule, Pack, Product, SupplyEvent, User
+from .models import MediKeepConnection, MediKeepLink, MedicationSchedule, Pack, Product, ScheduledDose, SupplyEvent, User
 from .schemas import (
     CatalogueProductRead,
     AuthStatus,
@@ -25,6 +26,8 @@ from .schemas import (
     MediKeepMedicationRead,
     MedicineOverviewRead,
     MedicationScheduleUpdate,
+    ScheduledDoseAction,
+    ScheduledDoseRead,
     PackCreate,
     PackRead,
     ProductCreate,
@@ -325,11 +328,16 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
 
     links_by_product = {link.product_id: link for link in links}
     schedules = {item.product_id: item for item in session.query(MedicationSchedule).filter_by(user_id=user.id).all()}
+    schedules_by_medikeep = {}
+    for product_id, schedule in schedules.items():
+        link = links_by_product.get(product_id)
+        if link:
+            schedules_by_medikeep.setdefault(link.medikeep_medication_id, schedule)
     cards: dict[str, dict] = {}
     for product_id, product in products.items():
         link = links_by_product.get(product_id)
         external = all_by_id.get(link.medikeep_medication_id) if link else None
-        schedule = schedules.get(product_id)
+        schedule = schedules.get(product_id) or (schedules_by_medikeep.get(link.medikeep_medication_id) if link else None)
         matching_packs = [pack for pack in packs if pack.product_id == product_id]
         card_key = f"medikeep:{link.medikeep_medication_id}" if link else f"product:{product_id}"
         # A person may have an old and a new pack/product for the same
@@ -398,24 +406,175 @@ def update_medication_schedule(
     if not owns_product and not linked_product:
         raise HTTPException(status_code=404, detail="Medicine not found")
     link = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product_id).first()
-    product_ids = [product_id]
+    related_product_ids = [product_id]
     if link:
-        product_ids = [
+        related_product_ids = [
             item.product_id
             for item in session.query(MediKeepLink)
             .filter_by(user_id=user.id, medikeep_medication_id=link.medikeep_medication_id)
             .all()
         ]
-    for planned_product_id in product_ids:
-        schedule = session.query(MedicationSchedule).filter_by(user_id=user.id, product_id=planned_product_id).first()
-        if not schedule:
-            schedule = MedicationSchedule(user_id=user.id, product_id=planned_product_id)
-            session.add(schedule)
-        schedule.regular_times = json.dumps(sorted(set(payload.regular_times)))
-        schedule.as_required = payload.as_required
-        schedule.prn_notes = payload.prn_notes.strip() if payload.prn_notes else None
+    # One plan belongs to one medicine, not every historic pack/product that
+    # happens to be linked to it. Retire duplicate per-product plans first.
+    if len(related_product_ids) > 1:
+        session.query(MedicationSchedule).filter(
+            MedicationSchedule.user_id == user.id,
+            MedicationSchedule.product_id.in_(related_product_ids),
+            MedicationSchedule.product_id != product_id,
+        ).delete(synchronize_session=False)
+    schedule = session.query(MedicationSchedule).filter_by(user_id=user.id, product_id=product_id).first()
+    if not schedule:
+        schedule = MedicationSchedule(user_id=user.id, product_id=product_id)
+        session.add(schedule)
+    schedule.regular_times = json.dumps(sorted(set(payload.regular_times)))
+    schedule.as_required = payload.as_required
+    schedule.prn_notes = payload.prn_notes.strip() if payload.prn_notes else None
     session.commit()
     return next(item for item in list_medicine_dashboard(user, session) if item["product_id"] == product_id)
+
+
+SLOT_CLOCKS = {
+    "morning": time(8, 0),
+    "midday": time(12, 0),
+    "evening": time(19, 0),
+    "bedtime": time(22, 0),
+}
+
+
+def user_zone(user: User) -> ZoneInfo:
+    try:
+        return ZoneInfo(user.timezone or "Europe/Paris")
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("Europe/Paris")
+
+
+def generate_today_doses(user: User, session: Session) -> None:
+    """Materialise today’s regular plan as actionable doses, idempotently."""
+    zone = user_zone(user)
+    local_today = datetime.now(timezone.utc).astimezone(zone).date()
+    all_by_id = {}
+    try:
+        all_by_id = {item.id: item for item in all_medications(user_medikeep_config(user, session))}
+    except (MediKeepUnavailable, HTTPException):
+        pass
+    links = {item.product_id: item for item in session.query(MediKeepLink).filter_by(user_id=user.id).all()}
+    schedules = session.query(MedicationSchedule).filter_by(user_id=user.id).all()
+    generated = False
+    seen_medikeep_ids = set()
+    for schedule in schedules:
+        link = links.get(schedule.product_id)
+        if link:
+            # A shared medicine may have historic product links: only its plan
+            # record should generate a dose, and stopped prescriptions do not.
+            if link.medikeep_medication_id in seen_medikeep_ids:
+                continue
+            seen_medikeep_ids.add(link.medikeep_medication_id)
+            external = all_by_id.get(link.medikeep_medication_id)
+            if external and external.status != "active":
+                continue
+        for slot in json.loads(schedule.regular_times):
+            clock = SLOT_CLOCKS.get(slot)
+            if not clock:
+                continue
+            local_due = datetime.combine(local_today, clock, tzinfo=zone)
+            due = local_due.astimezone(timezone.utc).replace(tzinfo=None)
+            exists = session.query(ScheduledDose).filter_by(
+                user_id=user.id,
+                product_id=schedule.product_id,
+                administration_time=slot,
+                scheduled_for=due,
+            ).first()
+            if not exists:
+                session.add(
+                    ScheduledDose(
+                        user_id=user.id,
+                        product_id=schedule.product_id,
+                        administration_time=slot,
+                        scheduled_for=due,
+                        due_at=due,
+                    )
+                )
+                generated = True
+    if generated:
+        session.commit()
+
+
+def dose_read(dose: ScheduledDose, session: Session) -> dict:
+    product = session.get(Product, dose.product_id)
+    stock = sum(
+        pack.quantity_remaining + pack.quantity_in_dosette
+        for pack in session.query(Pack).filter_by(user_id=dose.user_id, product_id=dose.product_id, status="active").all()
+    )
+    return {
+        "id": dose.id,
+        "product_id": dose.product_id,
+        "medicine_name": product.name if product else "Unknown medicine",
+        "dosage": product.strength if product else None,
+        "route": None,
+        "administration_time": dose.administration_time,
+        "scheduled_for": dose.scheduled_for,
+        "due_at": dose.due_at,
+        "status": dose.status,
+        "actioned_at": dose.actioned_at,
+        "notes": dose.notes,
+        "stock_available": stock,
+    }
+
+
+@app.get("/api/v1/doses/today", response_model=list[ScheduledDoseRead])
+def list_today_doses(user: User = Depends(current_user), session: Session = Depends(get_session)):
+    generate_today_doses(user, session)
+    zone = user_zone(user)
+    local_today = datetime.now(timezone.utc).astimezone(zone).date()
+    start = datetime.combine(local_today, time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+    end = start + timedelta(days=1)
+    doses = (
+        session.query(ScheduledDose)
+        .filter(ScheduledDose.user_id == user.id, ScheduledDose.scheduled_for >= start, ScheduledDose.scheduled_for < end)
+        .order_by(ScheduledDose.due_at)
+        .all()
+    )
+    return [dose_read(dose, session) for dose in doses]
+
+
+@app.post("/api/v1/doses/{dose_id}/action", response_model=ScheduledDoseRead)
+def action_scheduled_dose(
+    dose_id: int,
+    payload: ScheduledDoseAction,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    dose = session.query(ScheduledDose).filter_by(id=dose_id, user_id=user.id).first()
+    if not dose:
+        raise HTTPException(status_code=404, detail="Scheduled dose not found")
+    if dose.status in {"taken", "skipped"}:
+        raise HTTPException(status_code=409, detail="This dose has already been actioned")
+    now = datetime.utcnow()
+    if payload.action == "snooze":
+        dose.status = "snoozed"
+        dose.due_at = now + timedelta(minutes=payload.snooze_minutes)
+        dose.notes = payload.notes or f"Snoozed for {payload.snooze_minutes} minutes"
+    elif payload.action == "skipped":
+        dose.status = "skipped"
+        dose.actioned_at = now
+        dose.notes = payload.notes
+    else:
+        pack = (
+            session.query(Pack)
+            .filter(Pack.user_id == user.id, Pack.product_id == dose.product_id, Pack.status == "active", Pack.quantity_remaining > 0)
+            .order_by(Pack.expiry_date.is_(None), Pack.expiry_date, Pack.id)
+            .first()
+        )
+        if not pack:
+            raise HTTPException(status_code=409, detail="No recorded pack has stock for this medicine")
+        pack.quantity_remaining -= 1
+        session.add(SupplyEvent(pack_id=pack.id, event_type="taken_from_pack", quantity=1, notes=f"Scheduled {dose.administration_time} dose"))
+        dose.status = "taken"
+        dose.actioned_at = now
+        dose.notes = payload.notes
+    session.commit()
+    session.refresh(dose)
+    return dose_read(dose, session)
 
 
 @app.post("/api/v1/products", response_model=ProductRead, status_code=201)
