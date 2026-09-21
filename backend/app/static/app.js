@@ -185,6 +185,7 @@ function renderMedicine(medicine) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ regular_times, as_required: prn.checked, prn_notes: prnNotes.value.trim() || null }),
         });
+        editor.hidden = true;
         await loadMedicines();
       } catch (error) {
         alert(`Could not save administration plan: ${error.message}`);
@@ -526,4 +527,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.8.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.9.0");

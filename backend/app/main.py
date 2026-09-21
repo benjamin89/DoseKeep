@@ -331,8 +331,16 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
         external = all_by_id.get(link.medikeep_medication_id) if link else None
         schedule = schedules.get(product_id)
         matching_packs = [pack for pack in packs if pack.product_id == product_id]
-        cards[f"product:{product_id}"] = {
-            "key": f"product:{product_id}",
+        card_key = f"medikeep:{link.medikeep_medication_id}" if link else f"product:{product_id}"
+        # A person may have an old and a new pack/product for the same
+        # MediKeep medicine. Show one medicine with combined stock, not two.
+        if card_key in cards:
+            cards[card_key]["quantity_remaining"] += sum(pack.quantity_remaining for pack in matching_packs)
+            cards[card_key]["quantity_in_dosette"] += sum(pack.quantity_in_dosette for pack in matching_packs)
+            cards[card_key]["active_pack_count"] += len(matching_packs)
+            continue
+        cards[card_key] = {
+            "key": card_key,
             "product_id": product_id,
             "medikeep_medication_id": link.medikeep_medication_id if link else None,
             "name": external.name if external else product.name,
@@ -389,13 +397,23 @@ def update_medication_schedule(
     linked_product = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product_id).first()
     if not owns_product and not linked_product:
         raise HTTPException(status_code=404, detail="Medicine not found")
-    schedule = session.query(MedicationSchedule).filter_by(user_id=user.id, product_id=product_id).first()
-    if not schedule:
-        schedule = MedicationSchedule(user_id=user.id, product_id=product_id)
-        session.add(schedule)
-    schedule.regular_times = json.dumps(sorted(set(payload.regular_times)))
-    schedule.as_required = payload.as_required
-    schedule.prn_notes = payload.prn_notes.strip() if payload.prn_notes else None
+    link = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product_id).first()
+    product_ids = [product_id]
+    if link:
+        product_ids = [
+            item.product_id
+            for item in session.query(MediKeepLink)
+            .filter_by(user_id=user.id, medikeep_medication_id=link.medikeep_medication_id)
+            .all()
+        ]
+    for planned_product_id in product_ids:
+        schedule = session.query(MedicationSchedule).filter_by(user_id=user.id, product_id=planned_product_id).first()
+        if not schedule:
+            schedule = MedicationSchedule(user_id=user.id, product_id=planned_product_id)
+            session.add(schedule)
+        schedule.regular_times = json.dumps(sorted(set(payload.regular_times)))
+        schedule.as_required = payload.as_required
+        schedule.prn_notes = payload.prn_notes.strip() if payload.prn_notes else None
     session.commit()
     return next(item for item in list_medicine_dashboard(user, session) if item["product_id"] == product_id)
 
