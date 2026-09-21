@@ -1,3 +1,4 @@
+import json
 from datetime import date
 from pathlib import Path
 
@@ -12,8 +13,8 @@ from .auth import current_user, decrypt_config, encrypt_config, hash_password, m
 from .catalogue import lookup_french_gtin
 from .database import Base, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
-from .medikeep import MediKeepUnavailable, active_medications, normalize_name, suggested_medications
-from .models import MediKeepConnection, MediKeepLink, Pack, Product, SupplyEvent, User
+from .medikeep import MediKeepUnavailable, active_medications, all_medications, normalize_name, suggested_medications
+from .models import MediKeepConnection, MediKeepLink, MedicationSchedule, Pack, Product, SupplyEvent, User
 from .schemas import (
     CatalogueProductRead,
     AuthStatus,
@@ -23,6 +24,7 @@ from .schemas import (
     MediKeepConnectionRead,
     MediKeepMedicationRead,
     MedicineOverviewRead,
+    MedicationScheduleUpdate,
     PackCreate,
     PackRead,
     ProductCreate,
@@ -128,6 +130,31 @@ def medikeep_read(medication) -> dict:
     return medication.__dict__
 
 
+def migrate_legacy_links(user: User, session: Session) -> None:
+    """Carry forward links made before links became user-specific."""
+    legacy_products = (
+        session.query(Product)
+        .join(Pack, Pack.product_id == Product.id)
+        .filter(Pack.user_id == user.id, Product.medikeep_medication_id.is_not(None))
+        .distinct()
+        .all()
+    )
+    changed = False
+    for product in legacy_products:
+        exists = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product.id).first()
+        if not exists:
+            session.add(
+                MediKeepLink(
+                    user_id=user.id,
+                    product_id=product.id,
+                    medikeep_medication_id=product.medikeep_medication_id,
+                )
+            )
+            changed = True
+    if changed:
+        session.commit()
+
+
 def user_medikeep_config(user: User, session: Session) -> dict:
     connection = session.query(MediKeepConnection).filter_by(user_id=user.id).first()
     if not connection:
@@ -198,7 +225,7 @@ def list_medikeep_suggestions(name: str, user: User = Depends(current_user), ses
 def import_medikeep_medication(medication_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
     """Create or explicitly link a DoseKeep product from an active MediKeep record."""
     try:
-        medication = next((item for item in active_medications(user_medikeep_config(user, session)) if item.id == medication_id), None)
+        medication = next((item for item in all_medications(user_medikeep_config(user, session)) if item.id == medication_id), None)
     except MediKeepUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     if not medication:
@@ -245,22 +272,25 @@ def list_products(user: User = Depends(current_user), session: Session = Depends
 @app.get("/api/v1/dashboard/medicines", response_model=list[MedicineOverviewRead])
 def list_medicine_dashboard(user: User = Depends(current_user), session: Session = Depends(get_session)):
     """Default user view: medicines first, with packs as supporting detail."""
+    migrate_legacy_links(user, session)
     packs = session.query(Pack).filter_by(user_id=user.id, status="active").all()
     links = session.query(MediKeepLink).filter_by(user_id=user.id).all()
     product_ids = {pack.product_id for pack in packs} | {link.product_id for link in links}
     products = {item.id: item for item in session.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
-    active_by_id = {}
+    all_by_id = {}
     try:
-        active_by_id = {item.id: item for item in active_medications(user_medikeep_config(user, session))}
+        all_by_id = {item.id: item for item in all_medications(user_medikeep_config(user, session))}
     except (MediKeepUnavailable, HTTPException):
         # DoseKeep's own stock dashboard remains useful when MediKeep is offline.
         pass
 
     links_by_product = {link.product_id: link for link in links}
+    schedules = {item.product_id: item for item in session.query(MedicationSchedule).filter_by(user_id=user.id).all()}
     cards: dict[str, dict] = {}
     for product_id, product in products.items():
         link = links_by_product.get(product_id)
-        external = active_by_id.get(link.medikeep_medication_id) if link else None
+        external = all_by_id.get(link.medikeep_medication_id) if link else None
+        schedule = schedules.get(product_id)
         matching_packs = [pack for pack in packs if pack.product_id == product_id]
         cards[f"product:{product_id}"] = {
             "key": f"product:{product_id}",
@@ -274,12 +304,17 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
             "quantity_in_dosette": sum(pack.quantity_in_dosette for pack in matching_packs),
             "active_pack_count": len(matching_packs),
             "linked_to_medikeep": bool(link),
+            "medikeep_status": external.status if external else None,
+            "regular_times": json.loads(schedule.regular_times) if schedule else [],
+            "as_required": schedule.as_required if schedule else False,
+            "prn_notes": schedule.prn_notes if schedule else None,
         }
 
-    # Show all active MediKeep medicines, even before the user has scanned a pack.
+    # Show active MediKeep medicines even before the user has scanned a pack.
+    # Non-active entries remain shown once linked to stock above.
     linked_medication_ids = {link.medikeep_medication_id for link in links}
-    for medication_id, medication in active_by_id.items():
-        if medication_id not in linked_medication_ids:
+    for medication_id, medication in all_by_id.items():
+        if medication.status == "active" and medication_id not in linked_medication_ids:
             cards[f"medikeep:{medication_id}"] = {
                 "key": f"medikeep:{medication_id}",
                 "product_id": None,
@@ -292,8 +327,38 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
                 "quantity_in_dosette": 0,
                 "active_pack_count": 0,
                 "linked_to_medikeep": True,
+                "medikeep_status": medication.status,
+                "regular_times": [],
+                "as_required": False,
+                "prn_notes": None,
             }
     return sorted(cards.values(), key=lambda item: item["name"].casefold())
+
+
+@app.put("/api/v1/products/{product_id}/schedule", response_model=MedicineOverviewRead)
+def update_medication_schedule(
+    product_id: int,
+    payload: MedicationScheduleUpdate,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    try:
+        payload.validate_schedule()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    owns_product = session.query(Pack).filter_by(user_id=user.id, product_id=product_id).first()
+    linked_product = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product_id).first()
+    if not owns_product and not linked_product:
+        raise HTTPException(status_code=404, detail="Medicine not found")
+    schedule = session.query(MedicationSchedule).filter_by(user_id=user.id, product_id=product_id).first()
+    if not schedule:
+        schedule = MedicationSchedule(user_id=user.id, product_id=product_id)
+        session.add(schedule)
+    schedule.regular_times = json.dumps(sorted(set(payload.regular_times)))
+    schedule.as_required = payload.as_required
+    schedule.prn_notes = payload.prn_notes.strip() if payload.prn_notes else None
+    session.commit()
+    return next(item for item in list_medicine_dashboard(user, session) if item["product_id"] == product_id)
 
 
 @app.post("/api/v1/products", response_model=ProductRead, status_code=201)
@@ -349,11 +414,11 @@ def create_pack_from_scan(scan: ScannedPackCreate, user: User = Depends(current_
 
     if scan.medikeep_medication_id is not None:
         try:
-            active_ids = {item.id for item in active_medications(user_medikeep_config(user, session))}
+            available_ids = {item.id for item in all_medications(user_medikeep_config(user, session))}
         except MediKeepUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
-        if scan.medikeep_medication_id not in active_ids:
-            raise HTTPException(status_code=422, detail="Selected MediKeep medication is not active")
+        if scan.medikeep_medication_id not in available_ids:
+            raise HTTPException(status_code=422, detail="Selected MediKeep medication was not found")
 
     existing_pack = session.query(Pack).filter(Pack.user_id == user.id, Pack.gtin == gtin, Pack.serial_number == decoded.get("serial_number")).first()
     if existing_pack:

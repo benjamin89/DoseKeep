@@ -142,6 +142,21 @@ class MedicineOverviewRead(BaseModel):
     quantity_in_dosette: int = 0
     active_pack_count: int = 0
     linked_to_medikeep: bool = False
+    medikeep_status: str | None = None
+    regular_times: list[str] = []
+    as_required: bool = False
+    prn_notes: str | None = None
+
+
+class MedicationScheduleUpdate(BaseModel):
+    regular_times: list[str] = []
+    as_required: bool = False
+    prn_notes: str | None = Field(default=None, max_length=500)
+
+    def validate_schedule(self) -> None:
+        allowed = {"morning", "midday", "evening", "bedtime"}
+        if any(value not in allowed for value in self.regular_times):
+            raise ValueError("Administration times must be morning, midday, evening or bedtime")
 
 
 class ScannedPackCreate(BaseModel):

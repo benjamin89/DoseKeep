@@ -40,6 +40,9 @@ pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .medicine-stock strong { font-size: 1.65rem; color: #166534; }
 .medicine-stock span { color: #475569; }
 .medicine-note { color: #64748b; font-size: .88rem; margin: .45rem 0 0; }
+.schedule-editor { display: grid; gap: .45rem; margin-top: .75rem; padding: .8rem; background: #f3f7f2; border-radius: .6rem; }
+.schedule-option { display: flex; align-items: center; gap: .5rem; color: #334155; }
+.schedule-option input { width: auto; margin: 0; }
 .fine-print { color: #64748b; font-size: .8rem; text-align: center; }
 .auth-card { margin-top: 8vh; }
 .auth-card h1 { font-size: clamp(2rem, 7vw, 3rem); }

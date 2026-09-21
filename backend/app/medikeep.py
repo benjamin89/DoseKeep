@@ -50,7 +50,7 @@ def _token(config: dict) -> str:
         raise MediKeepUnavailable("Could not authenticate to MediKeep") from error
 
 
-def active_medications(config: dict) -> list[MediKeepMedication]:
+def all_medications(config: dict) -> list[MediKeepMedication]:
     base = (config.get("base_url") or "").strip().rstrip("/")
     if not base:
         raise MediKeepUnavailable("MediKeep connection is not configured")
@@ -78,8 +78,11 @@ def active_medications(config: dict) -> list[MediKeepMedication]:
             status=record.get("status") or "unknown",
         )
         for record in records
-        if record.get("status") == "active"
     ]
+
+
+def active_medications(config: dict) -> list[MediKeepMedication]:
+    return [medication for medication in all_medications(config) if medication.status == "active"]
 
 
 def normalize_name(value: str) -> set[str]:
@@ -91,7 +94,9 @@ def normalize_name(value: str) -> set[str]:
 def suggested_medications(config: dict, product_name: str) -> list[MediKeepMedication]:
     product_tokens = normalize_name(product_name)
     suggestions: list[tuple[int, MediKeepMedication]] = []
-    for medication in active_medications(config):
+    # A recently replaced medicine may no longer be active in MediKeep but can
+    # still be a real pack in the cupboard, so allow it to be linked on scan.
+    for medication in all_medications(config):
         medication_tokens = normalize_name(f"{medication.name} {medication.dosage or ''}")
         overlap = len(product_tokens & medication_tokens)
         if overlap:

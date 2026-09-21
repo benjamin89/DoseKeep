@@ -115,9 +115,12 @@ function renderMedicine(medicine) {
   const detail = document.createElement("p");
   detail.className = "medicine-note";
   const notes = [];
+  if (medicine.regular_times.length) notes.push(`regular: ${medicine.regular_times.join(", ")}`);
+  if (medicine.as_required) notes.push(`when required${medicine.prn_notes ? ` — ${medicine.prn_notes}` : ""}`);
   if (medicine.active_pack_count) notes.push(`${medicine.active_pack_count} active pack${medicine.active_pack_count === 1 ? "" : "s"}`);
   if (medicine.quantity_in_dosette) notes.push(`${medicine.quantity_in_dosette} in dosette`);
   if (medicine.linked_to_medikeep) notes.push("linked to MediKeep");
+  if (medicine.medikeep_status && medicine.medikeep_status !== "active") notes.push(`MediKeep: ${medicine.medikeep_status}`);
   detail.textContent = notes.join(" · ") || "Scan a pack to start stock tracking.";
   card.append(title, directions, stock, detail);
   if (!medicine.product_id && medicine.medikeep_medication_id) {
@@ -133,6 +136,58 @@ function renderMedicine(medicine) {
       }
     });
     card.append(importButton);
+  }
+  if (medicine.product_id) {
+    const scheduleButton = button("Set administration plan", "secondary compact");
+    const editor = document.createElement("div");
+    editor.className = "schedule-editor";
+    editor.hidden = true;
+    const label = document.createElement("strong");
+    label.textContent = "Regular administration times";
+    editor.append(label);
+    const selected = new Set(medicine.regular_times);
+    ["morning", "midday", "evening", "bedtime"].forEach(time => {
+      const wrapper = document.createElement("label");
+      wrapper.className = "schedule-option";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = time;
+      input.checked = selected.has(time);
+      wrapper.append(input, document.createTextNode(time[0].toUpperCase() + time.slice(1)));
+      editor.append(wrapper);
+    });
+    const prnLabel = document.createElement("label");
+    prnLabel.className = "schedule-option";
+    const prn = document.createElement("input");
+    prn.type = "checkbox";
+    prn.checked = medicine.as_required;
+    prnLabel.append(prn, document.createTextNode("May also be taken when required"));
+    editor.append(prnLabel);
+    const prnNotes = document.createElement("input");
+    prnNotes.placeholder = "Optional PRN guidance, e.g. maximum dose";
+    prnNotes.value = medicine.prn_notes || "";
+    editor.append(prnNotes);
+    const saveSchedule = button("Save administration plan", "compact");
+    saveSchedule.addEventListener("click", async () => {
+      saveSchedule.disabled = true;
+      const regular_times = [...editor.querySelectorAll('input[type="checkbox"]')]
+        .filter(input => input !== prn && input.checked)
+        .map(input => input.value);
+      try {
+        await api(`/api/v1/products/${medicine.product_id}/schedule`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ regular_times, as_required: prn.checked, prn_notes: prnNotes.value.trim() || null }),
+        });
+        await loadMedicines();
+      } catch (error) {
+        alert(`Could not save administration plan: ${error.message}`);
+        saveSchedule.disabled = false;
+      }
+    });
+    editor.append(saveSchedule);
+    scheduleButton.addEventListener("click", () => { editor.hidden = !editor.hidden; });
+    card.append(scheduleButton, editor);
   }
   medicinesContainer.append(card);
 }
@@ -299,8 +354,8 @@ function renderPack(pack, productName) {
 
   const actions = document.createElement("div");
   actions.className = "dose-actions";
-  const taken = button("Taken this evening");
-  const skipped = button("Skipped this evening", "outline");
+  const taken = button("Taken from pack");
+  const skipped = button("Skipped dose", "outline");
   async function record(eventType, control) {
     control.disabled = true;
     try {
@@ -465,4 +520,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.6.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.7.0");

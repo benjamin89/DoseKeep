@@ -42,6 +42,7 @@ class User(Base):
     packs: Mapped[list["Pack"]] = relationship(back_populates="user")
     medikeep_connection: Mapped["MediKeepConnection | None"] = relationship(back_populates="user")
     medikeep_links: Mapped[list["MediKeepLink"]] = relationship(back_populates="user")
+    medication_schedules: Mapped[list["MedicationSchedule"]] = relationship(back_populates="user")
 
 
 class Pack(Base):
@@ -89,6 +90,24 @@ class MediKeepLink(Base):
 
     user: Mapped[User] = relationship(back_populates="medikeep_links")
     product: Mapped[Product] = relationship(back_populates="medikeep_links")
+
+
+class MedicationSchedule(Base):
+    """User-specific regular/PRN administration plan for a tracked product."""
+
+    __tablename__ = "medication_schedules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    regular_times: Mapped[str] = mapped_column(Text, default="[]")
+    as_required: Mapped[bool] = mapped_column(default=False)
+    prn_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user: Mapped[User] = relationship(back_populates="medication_schedules")
+    product: Mapped[Product] = relationship()
 
 
 class SupplyEvent(Base):
