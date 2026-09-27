@@ -6,6 +6,7 @@ services:
     environment:
       DOSEKEEP_DATABASE_URL: ${DOSEKEEP_DATABASE_URL:-sqlite:////data/dosekeep.db}
       DOSEKEEP_ALLOWED_ORIGINS: ${DOSEKEEP_ALLOWED_ORIGINS:-http://localhost:8080}
+      DOSEKEEP_PUBLIC_URL: ${DOSEKEEP_PUBLIC_URL:-https://dosekeep.godsil.co.uk}
       # Each user adds their own optional MediKeep connection after signing in.
       # DOSEKEEP_MASTER_KEY is optional: without it DoseKeep creates an
       # instance key in the persistent Docker volume on first launch.

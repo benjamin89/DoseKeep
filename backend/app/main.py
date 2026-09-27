@@ -1,6 +1,8 @@
 import asyncio
+import html
 import hashlib
 import json
+import os
 import secrets
 from contextlib import asynccontextmanager
 from math import ceil
@@ -10,6 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -20,7 +23,7 @@ from .catalogue import lookup_french_gtin
 from .database import Base, SessionLocal, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
 from .medikeep import MediKeepUnavailable, active_medications, all_medications, create_medication, normalize_name, suggested_medications
-from .models import DeviceToken, Household, HouseholdMembership, MediKeepConnection, MediKeepLink, MedicationSchedule, Pack, Product, ProductCommonName, ScheduledDose, SupplyEvent, User
+from .models import DeviceToken, Household, HouseholdMembership, MediKeepConnection, MediKeepLink, MedicationSchedule, NotificationActionLink, Pack, Product, ProductCommonName, ScheduledDose, SupplyEvent, User
 from .notifications import send_ntfy
 from .schemas import (
     AdministrationTimeSettings,
@@ -877,6 +880,24 @@ def dose_read(dose: ScheduledDose, session: Session, display_names: dict[int, st
     }
 
 
+def notification_action_url(user: User, doses: list[ScheduledDose], now: datetime, session: Session) -> str:
+    """Create an unguessable link limited to this reminder's doses until 04:00."""
+    zone = user_zone(user)
+    local_tomorrow = now.replace(tzinfo=timezone.utc).astimezone(zone).date() + timedelta(days=1)
+    expires_at = datetime.combine(local_tomorrow, time(hour=4), tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+    token = secrets.token_urlsafe(32)
+    session.query(NotificationActionLink).filter(NotificationActionLink.expires_at < now).delete(synchronize_session=False)
+    session.add(
+        NotificationActionLink(
+            user_id=user.id,
+            dose_ids=json.dumps([dose.id for dose in doses]),
+            token_hash=hashlib.sha256(token.encode()).hexdigest(),
+            expires_at=expires_at,
+        )
+    )
+    return f"{os.getenv('DOSEKEEP_PUBLIC_URL', 'https://dosekeep.godsil.co.uk').rstrip('/')}/dose-actions/{token}"
+
+
 def process_due_notifications(session: Session) -> None:
     """Generate due doses and send each configured ntfy reminder once."""
     now = datetime.utcnow()
@@ -930,9 +951,10 @@ def process_due_notifications(session: Session) -> None:
             else:
                 title = f"DoseKeep: {slot} medicines due"
                 tags = "pill"
-            message = " · ".join(details)
+            message = f"{' · '.join(details)} — open this notification to record it."
+            action_url = notification_action_url(user, doses, now, session)
             try:
-                send_ntfy(settings["server_url"], settings["topic"], title, message, tags)
+                send_ntfy(settings["server_url"], settings["topic"], title, message, tags, action_url)
             except Exception as error:
                 # Keep the dose unmarked for a later retry.
                 print(f"ntfy reminder failed for user {user.id}, {administration_time} batch: {error}")
@@ -1009,16 +1031,7 @@ def list_today_doses(user: User = Depends(current_user), session: Session = Depe
     return [dose_read(dose, session, display_names) for dose in doses]
 
 
-@app.post("/api/v1/doses/{dose_id}/action", response_model=ScheduledDoseRead)
-def action_scheduled_dose(
-    dose_id: int,
-    payload: ScheduledDoseAction,
-    user: User = Depends(current_user),
-    session: Session = Depends(get_session),
-):
-    dose = session.query(ScheduledDose).filter_by(id=dose_id, user_id=user.id).first()
-    if not dose:
-        raise HTTPException(status_code=404, detail="Scheduled dose not found")
+def apply_scheduled_dose_action(dose: ScheduledDose, user: User, payload: ScheduledDoseAction, session: Session) -> None:
     if dose.status in {"taken", "skipped"}:
         raise HTTPException(status_code=409, detail="This dose has already been actioned")
     now = datetime.utcnow()
@@ -1042,6 +1055,90 @@ def action_scheduled_dose(
         dose.notes = payload.notes
     else:
         record_taken_dose(dose, user, session, now, payload.notes)
+
+
+def notification_link(token: str, session: Session) -> NotificationActionLink:
+    record = session.query(NotificationActionLink).filter_by(token_hash=hashlib.sha256(token.encode()).hexdigest()).first()
+    if not record or record.expires_at <= datetime.utcnow():
+        raise HTTPException(status_code=410, detail="This reminder action link has expired")
+    return record
+
+
+def reminder_doses(record: NotificationActionLink, session: Session) -> list[ScheduledDose]:
+    try:
+        dose_ids = [int(value) for value in json.loads(record.dose_ids)]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        dose_ids = []
+    return (
+        session.query(ScheduledDose)
+        .filter(ScheduledDose.user_id == record.user_id, ScheduledDose.id.in_(dose_ids))
+        .order_by(ScheduledDose.due_at)
+        .all()
+    )
+
+
+@app.get("/dose-actions/{token}", response_class=HTMLResponse)
+def reminder_action_page(token: str, session: Session = Depends(get_session)):
+    record = notification_link(token, session)
+    user = session.get(User, record.user_id)
+    names = medication_display_names(user, session)
+    zone = user_zone(user)
+    cards = []
+    for dose in reminder_doses(record, session):
+        if dose.status not in {"due", "snoozed"}:
+            continue
+        due = dose.due_at.replace(tzinfo=timezone.utc).astimezone(zone).strftime("%H:%M")
+        medicine = html.escape(names.get(dose.product_id) or (session.get(Product, dose.product_id).name if session.get(Product, dose.product_id) else "Medicine"))
+        cards.append(
+            f'<section><h2>{medicine}</h2><p>{html.escape(dose.administration_time.title())} · due {due}</p>'
+            f'<div class="actions" data-dose-id="{dose.id}"><button data-action="skipped" class="skip">Skip</button>'
+            '<button data-action="taken" class="taken">Taken</button><button data-action="snooze">Snooze 15 min</button></div></section>'
+        )
+    expiry = record.expires_at.replace(tzinfo=timezone.utc).astimezone(zone).strftime("%H:%M")
+    body = "".join(cards) or "<p>All doses on this reminder have already been recorded.</p>"
+    return HTMLResponse(
+        f"""<!doctype html><html lang=\"en\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>DoseKeep reminder</title>
+<style>body{{font-family:system-ui,sans-serif;background:#f7f8f4;color:#173222;margin:0;padding:1.25rem;max-width:38rem}}section{{background:#fff;padding:1.1rem;margin:1rem 0;border-radius:1rem;box-shadow:0 1px 3px #0002}}h1,h2{{margin:.1rem 0 .5rem}}p{{color:#475569}}.actions{{display:grid;gap:.55rem}}button{{border:0;border-radius:.55rem;padding:.85rem;font:inherit;font-weight:700;background:#475569;color:#fff}}button.taken{{background:#166534;padding:1rem;font-size:1.05rem}}button.skip{{background:#fff;color:#334155;border:1px solid #94a3b8}}#result{{font-weight:700}}</style>
+<h1>DoseKeep</h1><p>Record this reminder without signing in. This secure link expires at {expiry}.</p>{body}<p id=\"result\"></p>
+<script>document.querySelectorAll('.actions button').forEach(button => button.addEventListener('click', async () => {{
+  const actions = button.parentElement; actions.querySelectorAll('button').forEach(item => item.disabled = true);
+  const result = document.querySelector('#result');
+  try {{ const response = await fetch(location.pathname, {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{dose_id:Number(actions.dataset.doseId),action:button.dataset.action}})}}); const data = await response.json(); if (!response.ok) throw new Error(data.detail || 'Could not record dose'); actions.parentElement.remove(); result.textContent = `${{data.medicine_name}} recorded as ${{data.status}}.`; }}
+  catch (error) {{ result.textContent = error.message; actions.querySelectorAll('button').forEach(item => item.disabled = false); }}
+}}));</script></html>"""
+    )
+
+
+@app.post("/dose-actions/{token}")
+async def action_reminder_dose(token: str, request: Request, session: Session = Depends(get_session)):
+    record = notification_link(token, session)
+    try:
+        body = await request.json()
+        payload = ScheduledDoseAction.model_validate(body)
+        dose_id = int(body.get("dose_id"))
+    except Exception:
+        raise HTTPException(status_code=422, detail="Choose a valid reminder action")
+    dose = next((item for item in reminder_doses(record, session) if item.id == dose_id), None)
+    if not dose:
+        raise HTTPException(status_code=404, detail="Dose is not part of this reminder")
+    user = session.get(User, record.user_id)
+    apply_scheduled_dose_action(dose, user, payload, session)
+    session.commit()
+    session.refresh(dose)
+    return dose_read(dose, session, medication_display_names(user, session))
+
+
+@app.post("/api/v1/doses/{dose_id}/action", response_model=ScheduledDoseRead)
+def action_scheduled_dose(
+    dose_id: int,
+    payload: ScheduledDoseAction,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    dose = session.query(ScheduledDose).filter_by(id=dose_id, user_id=user.id).first()
+    if not dose:
+        raise HTTPException(status_code=404, detail="Scheduled dose not found")
+    apply_scheduled_dose_action(dose, user, payload, session)
     session.commit()
     session.refresh(dose)
     return dose_read(dose, session, medication_display_names(user, session))

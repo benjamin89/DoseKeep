@@ -84,6 +84,19 @@ class DeviceToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class NotificationActionLink(Base):
+    """A short-lived, unguessable capability for a reminder's dose actions."""
+
+    __tablename__ = "notification_action_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    dose_ids: Mapped[str] = mapped_column(Text)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Pack(Base):
     __tablename__ = "packs"
 

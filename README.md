@@ -47,9 +47,12 @@ due, and sends one fresh reminder after a dose is snoozed. It also includes the
 currently recorded stock in the message and warns when no stock is recorded.
 
 The reminder worker runs inside the DoseKeep service, so notifications do not
-depend on leaving the web app open. No ntfy credentials are stored by this
-initial integration; use a private topic or a server that permits topic-only
-publishing.
+depend on leaving the web app open. Each reminder opens a secure, time-limited
+action page that can record the listed dose as taken, skipped or snoozed
+without signing in; use a private ntfy topic because anyone who receives the
+notification can use that link before it expires. No ntfy credentials are
+stored by this initial integration; use a private topic or a server that
+permits topic-only publishing.
 
 ### Phone camera access
 
