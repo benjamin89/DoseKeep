@@ -113,6 +113,24 @@ class CabinetGuestLink(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class HouseholdInvite(Base):
+    """A revocable, single-use invitation to create/sign in to DoseKeep."""
+
+    __tablename__ = "household_invites"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    household_id: Mapped[int | None] = mapped_column(ForeignKey("households.id"), nullable=True, index=True)
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    add_to_household: Mapped[bool] = mapped_column(default=True)
+    role: Mapped[str] = mapped_column(String(20), default="viewer")
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    encrypted_token: Mapped[str] = mapped_column(Text)
+    accepted_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Pack(Base):
     __tablename__ = "packs"
 

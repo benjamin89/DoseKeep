@@ -119,6 +119,11 @@ class CabinetGuestLinkCreate(BaseModel):
     require_name: bool = True
 
 
+class HouseholdInviteCreate(BaseModel):
+    add_to_household: bool = True
+    role: str = Field(default="viewer", pattern="^(viewer|contributor|admin)$")
+
+
 class StockCorrection(BaseModel):
     quantity_remaining: int = Field(ge=0)
     notes: str | None = None

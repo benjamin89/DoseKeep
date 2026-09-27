@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -26,7 +26,7 @@ from .catalogue import lookup_french_gtin
 from .database import Base, SessionLocal, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
 from .medikeep import MediKeepUnavailable, active_medications, all_medications, create_medication, normalize_name, suggested_medications
-from .models import CabinetGuestLink, DeviceToken, Household, HouseholdMembership, MediKeepConnection, MediKeepLink, MedicationSchedule, NotificationActionLink, Pack, Product, ProductCommonName, ScheduledDose, SupplyEvent, User
+from .models import CabinetGuestLink, DeviceToken, Household, HouseholdInvite, HouseholdMembership, MediKeepConnection, MediKeepLink, MedicationSchedule, NotificationActionLink, Pack, Product, ProductCommonName, ScheduledDose, SupplyEvent, User
 from .notifications import send_ntfy
 from .schemas import (
     AdministrationTimeSettings,
@@ -40,6 +40,7 @@ from .schemas import (
     DecodedCode,
     MediKeepImportRead,
     HouseholdCreate,
+    HouseholdInviteCreate,
     HouseholdMemberCreate,
     HouseholdRead,
     MediKeepConnectionCreate,
@@ -127,6 +128,7 @@ def register_account(payload: UserRegister, request: Request, session: Session =
     # The first account on an existing single-user install owns legacy packs.
     if first_account:
         session.query(Pack).filter(Pack.user_id.is_(None)).update({Pack.user_id: user.id})
+    apply_pending_household_invite(request, user, session)
     session.commit()
     request.session["user_id"] = user.id
     return {"authenticated": True, "user": user, "medikeep_connected": False}
@@ -137,6 +139,8 @@ def login_account(payload: UserRegister, request: Request, session: Session = De
     user = session.query(User).filter_by(email=payload.email.strip().lower()).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    apply_pending_household_invite(request, user, session)
+    session.commit()
     request.session["user_id"] = user.id
     return {
         "authenticated": True,
@@ -209,6 +213,31 @@ def cabinet_qr_data_url(url: str) -> str:
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
+
+
+def household_invite_url(record: HouseholdInvite) -> str | None:
+    try:
+        token = decrypt_config(record.encrypted_token)["token"]
+    except Exception:
+        return None
+    return f"{os.getenv('DOSEKEEP_PUBLIC_URL', 'https://dosekeep.godsil.co.uk').rstrip('/')}/invite/{token}"
+
+
+def apply_pending_household_invite(request: Request, user: User, session: Session) -> None:
+    invite_id = request.session.pop("household_invite_id", None)
+    if not invite_id:
+        return
+    invite = session.get(HouseholdInvite, invite_id)
+    if not invite or invite.revoked_at or invite.accepted_at:
+        return
+    if invite.household_id and invite.add_to_household:
+        membership = session.query(HouseholdMembership).filter_by(household_id=invite.household_id, user_id=user.id).first()
+        if membership:
+            membership.role = invite.role
+        else:
+            session.add(HouseholdMembership(household_id=invite.household_id, user_id=user.id, role=invite.role))
+    invite.accepted_by_user_id = user.id
+    invite.accepted_at = datetime.utcnow()
 
 
 @app.get("/api/v1/admin/overview")
@@ -777,6 +806,67 @@ def revoke_cabinet_guest_link(household_id: int, link_id: int, user: User = Depe
     return {"ok": True}
 
 
+@app.get("/api/v1/households/{household_id}/invites")
+def list_household_invites(household_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    require_household_role(user, household_id, "admin", session)
+    return [
+        {
+            "id": item.id,
+            "role": item.role,
+            "add_to_household": item.add_to_household,
+            "accepted_at": item.accepted_at,
+            "revoked_at": item.revoked_at,
+            "created_at": item.created_at,
+            "url": household_invite_url(item) if not item.revoked_at and not item.accepted_at else None,
+        }
+        for item in session.query(HouseholdInvite).filter_by(household_id=household_id).order_by(HouseholdInvite.created_at.desc()).all()
+    ]
+
+
+@app.post("/api/v1/households/{household_id}/invites", status_code=201)
+def create_household_invite(
+    household_id: int,
+    payload: HouseholdInviteCreate,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    require_household_role(user, household_id, "admin", session)
+    token = secrets.token_urlsafe(32)
+    record = HouseholdInvite(
+        household_id=household_id,
+        created_by_user_id=user.id,
+        add_to_household=payload.add_to_household,
+        role=payload.role,
+        token_hash=hashlib.sha256(token.encode()).hexdigest(),
+        encrypted_token=encrypt_config({"token": token}),
+    )
+    session.add(record)
+    session.commit()
+    return {"id": record.id, "url": household_invite_url(record), "add_to_household": record.add_to_household, "role": record.role}
+
+
+@app.delete("/api/v1/households/{household_id}/invites/{invite_id}")
+def revoke_household_invite(household_id: int, invite_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    require_household_role(user, household_id, "admin", session)
+    record = session.query(HouseholdInvite).filter_by(id=invite_id, household_id=household_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Household invitation not found")
+    record.revoked_at = datetime.utcnow()
+    session.commit()
+    return {"ok": True}
+
+
+@app.get("/invite/{token}", response_class=HTMLResponse)
+def accept_household_invite(token: str, request: Request, session: Session = Depends(get_session)):
+    record = session.query(HouseholdInvite).filter_by(token_hash=hashlib.sha256(token.encode()).hexdigest()).first()
+    if not record or record.revoked_at or record.accepted_at:
+        raise HTTPException(status_code=404, detail="This invitation is no longer available")
+    request.session["household_invite_id"] = record.id
+    household = session.get(Household, record.household_id) if record.add_to_household else None
+    destination = f"the {html.escape(household.name)} household as {html.escape(record.role)}" if household else "DoseKeep"
+    return HTMLResponse(f'''<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DoseKeep invitation</title><style>body{{font-family:system-ui,sans-serif;max-width:36rem;padding:2rem;margin:auto;color:#173222}}a{{display:block;padding:.9rem;border-radius:.55rem;background:#166534;color:#fff;font-weight:700;text-align:center;text-decoration:none}}</style><h1>You’re invited to DoseKeep</h1><p>Create an account or sign in to accept access to {destination}.</p><a href="/">Continue to DoseKeep</a></html>''')
+
+
 def cabinet_actor_name(request: Request, link: CabinetGuestLink, session: Session) -> str | None:
     return request.session.get(f"cabinet_actor_{link.id}")
 
@@ -805,7 +895,7 @@ def cabinet_guest_page(token: str, request: Request, session: Session = Depends(
         else '<p>Already registered? <a href="/">Sign in to DoseKeep</a>, then return to this QR link.</p>'
     )
     identity = (
-        f"<p>Recording as <strong>{html.escape(actor)}</strong>.</p>"
+        f'<p>Recording as <strong>{html.escape(actor)}</strong>. <button type="button" id="change-identity">Change name / identity</button></p>'
         if actor
         else f'''{account_choice}<form id="guest-form"><label for="guest-name">Your name{' (required)' if link.require_name else ' (optional)'}</label><input id="guest-name" maxlength="120" {required} placeholder="Name for the cabinet record" /><button>Continue as guest</button></form>'''
     )
@@ -813,7 +903,7 @@ def cabinet_guest_page(token: str, request: Request, session: Session = Depends(
         f'''<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(household.name)} cabinet</title>
 <style>body{{font-family:system-ui,sans-serif;background:#f7f8f4;color:#173222;margin:0;padding:1.25rem;max-width:38rem}}section,form{{background:#fff;padding:1.1rem;margin:1rem 0;border-radius:1rem;box-shadow:0 1px 3px #0002}}h1,h2{{margin:.1rem 0 .5rem}}p{{color:#475569}}input,button{{width:100%;box-sizing:border-box;margin-top:.6rem;padding:.8rem;border-radius:.55rem;font:inherit}}input{{border:1px solid #9ca3af}}button{{border:0;background:#166534;color:white;font-weight:700}}#result{{font-weight:700}}</style>
 <h1>{html.escape(household.name)} cabinet</h1><p>Shared cabinet access</p>{identity}<div id="items">{content}</div><p id="result"></p>
-<script>const result=document.querySelector('#result');async function identity(body){{const response=await fetch(location.pathname+'/guest',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});if(response.ok)location.reload();else result.textContent=(await response.json()).detail||'Could not continue';}}const guest=document.querySelector('#guest-form');if(guest)guest.addEventListener('submit',event=>{{event.preventDefault();identity({{mode:'guest',name:document.querySelector('#guest-name').value}});}});const account=document.querySelector('#account-choice');if(account)account.addEventListener('click',()=>identity({{mode:'account'}}));document.querySelectorAll('[data-product-id]').forEach(button=>button.addEventListener('click',async()=>{{button.disabled=true;const response=await fetch(location.pathname+'/record',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{product_id:Number(button.dataset.productId)}})}});const data=await response.json();if(response.ok){{result.textContent=`Recorded: ${{data.product_name}}.`;location.reload();}}else{{result.textContent=data.detail||'Could not record use';button.disabled=false;}}}}));</script></html>'''
+<script>const result=document.querySelector('#result');async function identity(body){{const response=await fetch(location.pathname+'/guest',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});if(response.ok)location.reload();else result.textContent=(await response.json()).detail||'Could not continue';}}const guest=document.querySelector('#guest-form');if(guest)guest.addEventListener('submit',event=>{{event.preventDefault();identity({{mode:'guest',name:document.querySelector('#guest-name').value}});}});const account=document.querySelector('#account-choice');if(account)account.addEventListener('click',()=>identity({{mode:'account'}}));const change=document.querySelector('#change-identity');if(change)change.addEventListener('click',()=>identity({{mode:'clear'}}));document.querySelectorAll('[data-product-id]').forEach(button=>button.addEventListener('click',async()=>{{button.disabled=true;const response=await fetch(location.pathname+'/record',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{product_id:Number(button.dataset.productId)}})}});const data=await response.json();if(response.ok){{result.textContent=`Recorded: ${{data.product_name}}.`;location.reload();}}else{{result.textContent=data.detail||'Could not record use';button.disabled=false;}}}}));</script></html>'''
     )
 
 
@@ -827,6 +917,9 @@ async def identify_cabinet_guest(token: str, request: Request, session: Session 
     except Exception:
         mode = "guest"
         name = ""
+    if mode == "clear":
+        request.session.pop(f"cabinet_actor_{link.id}", None)
+        return {"ok": True}
     if mode == "account":
         user = session.get(User, request.session.get("user_id"))
         if not user:

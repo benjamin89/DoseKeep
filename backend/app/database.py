@@ -56,3 +56,6 @@ def ensure_schema() -> None:
         guest_link_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(cabinet_guest_links)"))}
         if guest_link_columns and "encrypted_token" not in guest_link_columns:
             connection.execute(text("ALTER TABLE cabinet_guest_links ADD COLUMN encrypted_token TEXT"))
+        invite_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(household_invites)"))}
+        if invite_columns and "add_to_household" not in invite_columns:
+            connection.execute(text("ALTER TABLE household_invites ADD COLUMN add_to_household BOOLEAN NOT NULL DEFAULT 1"))

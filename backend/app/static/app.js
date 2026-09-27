@@ -211,6 +211,59 @@ async function loadHouseholds() {
         }
         card.append(guestLinks);
         loadGuestLinks();
+        const inviteForm = document.createElement("form");
+        const inviteCopy = document.createElement("p");
+        inviteCopy.className = "medicine-note";
+        inviteCopy.textContent = "Invite someone to create or sign in to DoseKeep.";
+        const addToHousehold = document.createElement("label");
+        addToHousehold.className = "schedule-option";
+        const addToHouseholdCheck = document.createElement("input");
+        addToHouseholdCheck.type = "checkbox";
+        addToHouseholdCheck.checked = true;
+        addToHousehold.append(addToHouseholdCheck, document.createTextNode(" Add them to this household"));
+        const inviteRole = document.createElement("select");
+        ["viewer", "contributor", "admin"].forEach(value => { const option = document.createElement("option"); option.value = value; option.textContent = value; inviteRole.append(option); });
+        const createInvite = button("Create DoseKeep invitation", "secondary compact");
+        createInvite.type = "submit";
+        const inviteResult = document.createElement("p");
+        inviteResult.className = "medicine-note";
+        inviteForm.append(inviteCopy, addToHousehold, inviteRole, createInvite, inviteResult);
+        inviteForm.addEventListener("submit", async event => {
+          event.preventDefault();
+          try {
+            const invite = await api(`/api/v1/households/${household.id}/invites`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ add_to_household: addToHouseholdCheck.checked, role: inviteRole.value }) });
+            inviteResult.replaceChildren("Invitation link: ");
+            const anchor = document.createElement("a");
+            anchor.href = invite.url;
+            anchor.textContent = invite.url;
+            anchor.target = "_blank";
+            inviteResult.append(anchor);
+            await loadInvites();
+          } catch (error) { inviteResult.textContent = error.message; }
+        });
+        card.append(inviteForm);
+        const invites = document.createElement("div");
+        async function loadInvites() {
+          try {
+            const records = await api(`/api/v1/households/${household.id}/invites`);
+            invites.replaceChildren();
+            records.filter(record => !record.revoked_at && !record.accepted_at).forEach(record => {
+              const row = document.createElement("p");
+              row.className = "medicine-note";
+              row.textContent = `Pending invitation · ${record.add_to_household ? `${record.role} access` : "DoseKeep only"} `;
+              const open = document.createElement("a");
+              open.href = record.url;
+              open.textContent = "Open link";
+              open.target = "_blank";
+              const revoke = button("Revoke", "secondary compact");
+              revoke.addEventListener("click", async () => { await api(`/api/v1/households/${household.id}/invites/${record.id}`, { method: "DELETE" }); await loadInvites(); });
+              row.append(open, document.createTextNode(" "), revoke);
+              invites.append(row);
+            });
+          } catch { invites.textContent = "Could not load invitations."; }
+        }
+        card.append(invites);
+        loadInvites();
       }
       householdsContainer.append(card);
     });
