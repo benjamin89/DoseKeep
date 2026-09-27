@@ -15,13 +15,14 @@ from urllib.request import urlopen
 
 
 BDPM_BASE = "https://base-donnees-publique.medicaments.gouv.fr/download/file"
-FILES = ("CIS_CIP_bdpm.txt", "CIS_bdpm.txt")
+FILES = ("CIS_CIP_bdpm.txt", "CIS_bdpm.txt", "CIS_COMPO_bdpm.txt")
 REFRESH_SECONDS = 7 * 24 * 60 * 60
 
 
 @dataclass(frozen=True)
 class CatalogueProduct:
     name: str
+    common_name: str | None
     form: str | None
     route: str | None
     holder: str | None
@@ -62,6 +63,22 @@ def _quantity_hint(presentation: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _common_name(cis_id: str) -> str | None:
+    """Return the French DCI active ingredient(s) for a catalogue medicine."""
+    ingredients: list[str] = []
+    with _ensure_file("CIS_COMPO_bdpm.txt").open("rb") as file:
+        for line in file:
+            fields = _fields(line)
+            # CIS composition files identify active substances as "SA".
+            if len(fields) > 6 and fields[0] == cis_id and fields[6] == "SA" and fields[3]:
+                # BDPM publishes the DCI in capitals; make the initial
+                # suggestion readable while keeping it user-editable.
+                ingredient = fields[3].strip().capitalize()
+                if ingredient and ingredient not in ingredients:
+                    ingredients.append(ingredient)
+    return " / ".join(ingredients) or None
+
+
 def lookup_french_gtin(gtin: str) -> CatalogueProduct | None:
     """Resolve a French CIP13/GTIN against the official public BDPM files."""
     cip_path = _ensure_file("CIS_CIP_bdpm.txt")
@@ -87,6 +104,7 @@ def lookup_french_gtin(gtin: str) -> CatalogueProduct | None:
             if fields and fields[0] == cis_id:
                 return CatalogueProduct(
                     name=fields[1],
+                    common_name=_common_name(cis_id),
                     form=fields[2] or None,
                     route=fields[3] or None,
                     holder=fields[8].strip() if len(fields) > 8 and fields[8].strip() else None,

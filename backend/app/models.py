@@ -7,7 +7,7 @@ MediKeep medication id without requiring that integration.
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -95,6 +95,20 @@ class MediKeepLink(Base):
 
     user: Mapped[User] = relationship(back_populates="medikeep_links")
     product: Mapped[Product] = relationship(back_populates="medikeep_links")
+
+
+class ProductCommonName(Base):
+    """A user's preferred common name for a product, separate from pack data."""
+
+    __tablename__ = "product_common_names"
+    __table_args__ = (UniqueConstraint("user_id", "product_id", name="uq_product_common_name_user_product"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    common_name: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class MedicationSchedule(Base):

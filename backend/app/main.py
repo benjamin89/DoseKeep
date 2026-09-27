@@ -18,11 +18,12 @@ from .catalogue import lookup_french_gtin
 from .database import Base, SessionLocal, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
 from .medikeep import MediKeepUnavailable, active_medications, all_medications, create_medication, normalize_name, suggested_medications
-from .models import MediKeepConnection, MediKeepLink, MedicationSchedule, Pack, Product, ScheduledDose, SupplyEvent, User
+from .models import MediKeepConnection, MediKeepLink, MedicationSchedule, Pack, Product, ProductCommonName, ScheduledDose, SupplyEvent, User
 from .notifications import send_ntfy
 from .schemas import (
     AdministrationTimeSettings,
     CatalogueProductRead,
+    CommonNameUpdate,
     AuthStatus,
     DecodedCode,
     MediKeepImportRead,
@@ -235,6 +236,20 @@ def medikeep_read(medication) -> dict:
     return medication.__dict__
 
 
+def user_common_names(user: User, session: Session) -> dict[int, str]:
+    return {
+        item.product_id: item.common_name
+        for item in session.query(ProductCommonName).filter_by(user_id=user.id).all()
+    }
+
+
+def save_default_common_name(user: User, product_id: int, common_name: str | None, session: Session) -> None:
+    """Keep a scan/import suggestion without overwriting the user's edit."""
+    if not common_name or session.query(ProductCommonName).filter_by(user_id=user.id, product_id=product_id).first():
+        return
+    session.add(ProductCommonName(user_id=user.id, product_id=product_id, common_name=common_name.strip()))
+
+
 def migrate_legacy_links(user: User, session: Session) -> None:
     """Carry forward links made before links became user-specific."""
     legacy_products = (
@@ -388,6 +403,7 @@ def import_medikeep_medication(medication_id: int, user: User = Depends(current_
             session.add(product)
             created = True
         session.flush()
+        save_default_common_name(user, product.id, medication.name, session)
         session.add(MediKeepLink(user_id=user.id, product_id=product.id, medikeep_medication_id=medication.id))
     session.commit()
     session.refresh(product)
@@ -409,7 +425,7 @@ def create_and_link_medikeep_medication(product_id: int, user: User = Depends(cu
     try:
         medication = create_medication(
             user_medikeep_config(user, session),
-            name=product.name,
+            name=user_common_names(user, session).get(product.id) or product.name,
             dosage=product.strength,
             category=product.category,
         )
@@ -455,6 +471,7 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
         products = {item.id: item for item in session.query(Product).filter(Product.id.in_(product_ids)).all()}
 
     links_by_product = {link.product_id: link for link in links}
+    common_names = user_common_names(user, session)
     schedules = {item.product_id: item for item in session.query(MedicationSchedule).filter_by(user_id=user.id).all()}
     schedules_by_medikeep = {}
     for product_id, schedule in schedules.items():
@@ -479,7 +496,8 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
             "key": card_key,
             "product_id": product_id,
             "medikeep_medication_id": link.medikeep_medication_id if link else None,
-            "name": external.name if external else product.name,
+            "name": common_names.get(product_id) or (external.name if external else product.name),
+            "common_name": common_names.get(product_id),
             "dosage": external.dosage if external else product.strength,
             "route": external.route if external else None,
             "frequency": external.frequency if external else None,
@@ -503,6 +521,7 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
                 "product_id": None,
                 "medikeep_medication_id": medication_id,
                 "name": medication.name,
+                "common_name": None,
                 "dosage": medication.dosage,
                 "route": medication.route,
                 "frequency": medication.frequency,
@@ -532,6 +551,29 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
             card["stock_status"] = "unknown"
             card["estimated_run_out_date"] = None
     return sorted(cards.values(), key=lambda item: item["name"].casefold())
+
+
+@app.put("/api/v1/products/{product_id}/common-name")
+def update_common_name(
+    product_id: int,
+    payload: CommonNameUpdate,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    owned = (
+        session.query(Pack).filter_by(user_id=user.id, product_id=product_id).first()
+        or session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product_id).first()
+    )
+    if not owned:
+        raise HTTPException(status_code=404, detail="Medicine not found")
+    common_name = payload.common_name.strip()
+    record = session.query(ProductCommonName).filter_by(user_id=user.id, product_id=product_id).first()
+    if record:
+        record.common_name = common_name
+    else:
+        session.add(ProductCommonName(user_id=user.id, product_id=product_id, common_name=common_name))
+    session.commit()
+    return {"common_name": common_name}
 
 
 @app.put("/api/v1/products/{product_id}/schedule", response_model=MedicineOverviewRead)
@@ -660,22 +702,21 @@ def generate_today_doses(user: User, session: Session) -> None:
         session.commit()
 
 
-def medikeep_display_names(user: User, session: Session) -> dict[int, str]:
-    """Return linked MediKeep generic names, keyed by local product id.
+def medication_display_names(user: User, session: Session) -> dict[int, str]:
+    """Return preferred common names, with MediKeep and pack-name fallbacks.
 
-    A local product remains the safe fallback when MediKeep is not connected or
-    temporarily unavailable, so medication administration is never blocked by
-    the external service.
+    DoseKeep works alone: a user-edited/common catalogue name wins. Linked
+    MediKeep names remain the fallback for older linked products.
     """
+    names = user_common_names(user, session)
     try:
         medicines = {item.id: item for item in all_medications(user_medikeep_config(user, session))}
     except (MediKeepUnavailable, HTTPException):
-        return {}
-    return {
-        link.product_id: medicine.name
-        for link in session.query(MediKeepLink).filter_by(user_id=user.id).all()
-        if (medicine := medicines.get(link.medikeep_medication_id))
-    }
+        return names
+    for link in session.query(MediKeepLink).filter_by(user_id=user.id).all():
+        if medicine := medicines.get(link.medikeep_medication_id):
+            names.setdefault(link.product_id, medicine.name)
+    return names
 
 
 def dose_read(dose: ScheduledDose, session: Session, display_names: dict[int, str] | None = None) -> dict:
@@ -709,7 +750,7 @@ def process_due_notifications(session: Session) -> None:
         if not settings["enabled"] or not settings["topic"]:
             continue
         generate_today_doses(user, session)
-        display_names = medikeep_display_names(user, session)
+        display_names = medication_display_names(user, session)
         zone = user_zone(user)
         local_today = datetime.now(timezone.utc).astimezone(zone).date()
         day_start = datetime.combine(local_today, time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
@@ -817,7 +858,7 @@ def list_today_doses(user: User = Depends(current_user), session: Session = Depe
         .order_by(ScheduledDose.due_at)
         .all()
     )
-    display_names = medikeep_display_names(user, session)
+    display_names = medication_display_names(user, session)
     return [dose_read(dose, session, display_names) for dose in doses]
 
 
@@ -863,7 +904,7 @@ def action_scheduled_dose(
         dose.notes = payload.notes
     session.commit()
     session.refresh(dose)
-    return dose_read(dose, session, medikeep_display_names(user, session))
+    return dose_read(dose, session, medication_display_names(user, session))
 
 
 @app.post("/api/v1/products/{product_id}/prn", response_model=ScheduledDoseRead, status_code=201)
@@ -894,7 +935,7 @@ def record_prn_dose(product_id: int, user: User = Depends(current_user), session
     session.add(record)
     session.commit()
     session.refresh(record)
-    return dose_read(record, session, medikeep_display_names(user, session))
+    return dose_read(record, session, medication_display_names(user, session))
 
 
 @app.post("/api/v1/products", response_model=ProductRead, status_code=201)
@@ -971,6 +1012,7 @@ def create_pack_from_scan(scan: ScannedPackCreate, user: User = Depends(current_
         )
         session.add(product)
         session.flush()
+    save_default_common_name(user, product.id, catalogue_product.common_name, session)
     if scan.medikeep_medication_id is not None:
         existing_link = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product.id).first()
         if not existing_link:

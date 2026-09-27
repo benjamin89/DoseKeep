@@ -127,6 +127,7 @@ class DecodedCode(BaseModel):
 class CatalogueProductRead(BaseModel):
     gtin: str
     name: str
+    common_name: str | None = None
     form: str | None = None
     route: str | None = None
     holder: str | None = None
@@ -156,6 +157,7 @@ class MedicineOverviewRead(BaseModel):
     product_id: int | None = None
     medikeep_medication_id: int | None = None
     name: str
+    common_name: str | None = None
     dosage: str | None = None
     route: str | None = None
     frequency: str | None = None
@@ -181,6 +183,10 @@ class MedicationScheduleUpdate(BaseModel):
         allowed = {"morning", "midday", "evening", "bedtime"}
         if any(value not in allowed for value in self.regular_times):
             raise ValueError("Administration times must be morning, midday, evening or bedtime")
+
+
+class CommonNameUpdate(BaseModel):
+    common_name: str = Field(min_length=1, max_length=200)
 
 
 class ScheduledDoseRead(BaseModel):

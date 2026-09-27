@@ -321,6 +321,43 @@ function renderMedicine(medicine) {
     card.append(importButton);
   }
   if (medicine.product_id) {
+    const commonNameButton = button("Edit common name", "secondary compact");
+    const commonNameEditor = document.createElement("div");
+    commonNameEditor.className = "schedule-editor";
+    commonNameEditor.hidden = true;
+    const commonNameLabel = document.createElement("label");
+    commonNameLabel.textContent = "Common name";
+    const commonNameInput = document.createElement("input");
+    commonNameInput.type = "text";
+    commonNameInput.maxLength = 200;
+    commonNameInput.value = medicine.name;
+    const commonNameHint = document.createElement("p");
+    commonNameHint.className = "hint";
+    commonNameHint.textContent = "Used in your medication administration record and reminders; the precise pack name stays with stock records.";
+    const saveCommonName = button("Save common name", "compact");
+    saveCommonName.addEventListener("click", async () => {
+      const common_name = commonNameInput.value.trim();
+      if (!common_name) {
+        alert("Enter a common name.");
+        return;
+      }
+      saveCommonName.disabled = true;
+      try {
+        await api(`/api/v1/products/${medicine.product_id}/common-name`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ common_name }),
+        });
+        await Promise.all([loadMedicines(), loadAdministration(), loadPacks()]);
+      } catch (error) {
+        alert(`Could not save common name: ${error.message}`);
+        saveCommonName.disabled = false;
+      }
+    });
+    commonNameEditor.append(commonNameLabel, commonNameInput, commonNameHint, saveCommonName);
+    commonNameButton.addEventListener("click", () => { commonNameEditor.hidden = !commonNameEditor.hidden; });
+    card.append(commonNameButton, commonNameEditor);
+
     const scheduleButton = button(
       medicine.regular_times.length || medicine.as_required ? "Edit administration plan" : "Set administration plan",
       "secondary compact",
@@ -598,7 +635,7 @@ async function findProduct(raw) {
     const decoded = await api(`/api/v1/scan/parse?raw=${encodeURIComponent(raw)}`, { method: "POST" });
     const match = await api(`/api/v1/catalogue/fr/${decoded.gtin}`);
     result.textContent = JSON.stringify(decoded, null, 2);
-    productMatch.innerHTML = `<strong>${match.name}</strong><br>${match.presentation || match.form || "French catalogue match"}<br><small>${match.holder || ""}</small>`;
+    productMatch.innerHTML = `<strong>${match.name}</strong><br>${match.presentation || match.form || "French catalogue match"}${match.common_name ? `<br><small>Common name suggestion: ${match.common_name}</small>` : ""}<br><small>${match.holder || ""}</small>`;
     quantity.value = match.quantity_hint || "";
     productCategory.value = "medicine";
     await showMediKeepSuggestions(match.name);
