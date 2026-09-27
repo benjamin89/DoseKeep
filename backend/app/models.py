@@ -39,6 +39,8 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(512))
     timezone: Mapped[str] = mapped_column(String(80), default="Europe/Paris")
     administration_times: Mapped[str] = mapped_column(Text, default="{}")
+    # Kept per account: a topic can be private even on a shared ntfy server.
+    notification_settings: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     packs: Mapped[list["Pack"]] = relationship(back_populates="user")
@@ -127,6 +129,9 @@ class ScheduledDose(Base):
     status: Mapped[str] = mapped_column(String(20), default="due", index=True)
     actioned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set only after ntfy has accepted the message. Snoozing clears this so
+    # the rescheduled dose receives one new reminder.
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     user: Mapped[User] = relationship(back_populates="scheduled_doses")

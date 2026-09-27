@@ -24,6 +24,8 @@ const medikeepForm = document.querySelector("#medikeep-form");
 const medikeepSetupResult = document.querySelector("#medikeep-setup-result");
 const administrationTimesForm = document.querySelector("#administration-times-form");
 const administrationTimesResult = document.querySelector("#administration-times-result");
+const notificationSettingsForm = document.querySelector("#notification-settings-form");
+const notificationSettingsResult = document.querySelector("#notification-settings-result");
 const administrationContainer = document.querySelector("#administration");
 const pages = {
   medicines: document.querySelector("#page-medicines"),
@@ -61,7 +63,7 @@ async function showSignedIn(status) {
   document.querySelector("#welcome").textContent = `Signed in as ${status.user.email}. Scan a pack, check its expiry, then keep your stock up to date.`;
   document.querySelector("#account-settings").textContent = `Signed in as ${status.user.email}. Your packs and any MediKeep connection are private to this DoseKeep account.`;
   showPage("medicines");
-  await Promise.all([loadMedicines(), loadPacks(), loadMediKeep(), loadAdministrationTimes()]);
+  await Promise.all([loadMedicines(), loadPacks(), loadMediKeep(), loadAdministrationTimes(), loadNotificationSettings()]);
   await loadMediKeepConnection(status.medikeep_connected);
 }
 
@@ -180,6 +182,17 @@ async function loadAdministration() {
   }
 }
 
+async function loadNotificationSettings() {
+  try {
+    const settings = await api("/api/v1/settings/notifications");
+    document.querySelector("#notifications-enabled").checked = settings.enabled;
+    document.querySelector("#ntfy-server-url").value = settings.server_url;
+    document.querySelector("#ntfy-topic").value = settings.topic || "";
+  } catch (error) {
+    notificationSettingsResult.textContent = "Could not load notification settings.";
+  }
+}
+
 async function loadMediKeepConnection(knownConnected = false) {
   try {
     const connection = await api("/api/v1/medikeep/connection");
@@ -264,6 +277,8 @@ function renderMedicine(medicine) {
   const detail = document.createElement("p");
   detail.className = "medicine-note";
   const notes = [];
+  if (medicine.stock_status === "out_of_stock") notes.push("out of stock");
+  else if (medicine.estimated_run_out_date) notes.push(`estimated run-out: ${new Date(`${medicine.estimated_run_out_date}T00:00:00`).toLocaleDateString()}`);
   if (medicine.regular_times.length) notes.push(`regular: ${medicine.regular_times.join(", ")}`);
   if (medicine.as_required) notes.push(`when required${medicine.prn_notes ? ` — ${medicine.prn_notes}` : ""}`);
   if (medicine.active_pack_count) notes.push(`${medicine.active_pack_count} active pack${medicine.active_pack_count === 1 ? "" : "s"}`);
@@ -643,6 +658,36 @@ administrationTimesForm.addEventListener("submit", async event => {
     await loadAdministration();
   } catch (error) {
     administrationTimesResult.textContent = error.message;
+  }
+});
+
+notificationSettingsForm.addEventListener("submit", async event => {
+  event.preventDefault();
+  notificationSettingsResult.textContent = "Saving notification settings…";
+  const payload = {
+    enabled: document.querySelector("#notifications-enabled").checked,
+    server_url: document.querySelector("#ntfy-server-url").value.trim(),
+    topic: document.querySelector("#ntfy-topic").value.trim() || null,
+  };
+  try {
+    await api("/api/v1/settings/notifications", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    notificationSettingsResult.textContent = payload.enabled ? "Saved. DoseKeep will send ntfy reminders for scheduled doses." : "Saved. Reminders are disabled.";
+  } catch (error) {
+    notificationSettingsResult.textContent = error.message;
+  }
+});
+
+document.querySelector("#test-notifications").addEventListener("click", async () => {
+  notificationSettingsResult.textContent = "Sending test notification…";
+  try {
+    await api("/api/v1/settings/notifications/test", { method: "POST" });
+    notificationSettingsResult.textContent = "Test sent. Check your ntfy app or topic.";
+  } catch (error) {
+    notificationSettingsResult.textContent = error.message;
   }
 });
 

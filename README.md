@@ -14,6 +14,8 @@ DoseKeep is a self-hosted companion for tracking medicines, supplements and othe
 - supports pack-to-dosette allocation and taken/disposed supply events through the REST API;
 - serves a mobile-friendly installable web app;
 - provides separate DoseKeep accounts, so each person sees only their own packs;
+- can send per-account medication reminders through a private ntfy topic;
+- estimates a regular medicine's run-out date from recorded stock and its daily plan, and flags recorded zero stock;
 - lets each account optionally connect its own MediKeep host and credentials;
 - encrypts those optional connection settings at rest using a deployment-owned secret;
 - runs as one Docker Compose service.
@@ -35,6 +37,19 @@ connected MediKeep, or saved connection settings can no longer be decrypted.
 
 User MediKeep URLs and credentials do **not** go in the stack environment:
 each user enters them privately after signing in.
+
+### ntfy medication reminders
+
+In **Settings → Medication reminders**, enable reminders and enter an HTTPS ntfy
+server URL and a private topic (for example, an unguessable topic on
+`https://ntfy.sh`). DoseKeep sends one notification when each scheduled dose is
+due, and sends one fresh reminder after a dose is snoozed. It also includes the
+currently recorded stock in the message and warns when no stock is recorded.
+
+The reminder worker runs inside the DoseKeep service, so notifications do not
+depend on leaving the web app open. No ntfy credentials are stored by this
+initial integration; use a private topic or a server that permits topic-only
+publishing.
 
 ### Phone camera access
 

@@ -39,3 +39,8 @@ def ensure_schema() -> None:
             connection.execute(text("ALTER TABLE users ADD COLUMN timezone TEXT NOT NULL DEFAULT 'Europe/Paris'"))
         if "administration_times" not in user_columns:
             connection.execute(text("ALTER TABLE users ADD COLUMN administration_times TEXT NOT NULL DEFAULT '{}'"))
+        if "notification_settings" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN notification_settings TEXT NOT NULL DEFAULT '{}'"))
+        dose_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(scheduled_doses)"))}
+        if dose_columns and "notified_at" not in dose_columns:
+            connection.execute(text("ALTER TABLE scheduled_doses ADD COLUMN notified_at DATETIME"))

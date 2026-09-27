@@ -1,4 +1,7 @@
+import asyncio
 import json
+from contextlib import asynccontextmanager
+from math import ceil
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -12,10 +15,11 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .auth import current_user, decrypt_config, encrypt_config, hash_password, master_key, verify_password
 from .catalogue import lookup_french_gtin
-from .database import Base, engine, ensure_schema, get_session
+from .database import Base, SessionLocal, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
 from .medikeep import MediKeepUnavailable, active_medications, all_medications, create_medication, normalize_name, suggested_medications
 from .models import MediKeepConnection, MediKeepLink, MedicationSchedule, Pack, Product, ScheduledDose, SupplyEvent, User
+from .notifications import send_ntfy
 from .schemas import (
     AdministrationTimeSettings,
     CatalogueProductRead,
@@ -27,6 +31,7 @@ from .schemas import (
     MediKeepMedicationRead,
     MedicineOverviewRead,
     MedicationScheduleUpdate,
+    NotificationSettings,
     ScheduledDoseAction,
     ScheduledDoseRead,
     PackCreate,
@@ -45,7 +50,22 @@ from .schemas import (
 Base.metadata.create_all(bind=engine)
 ensure_schema()
 
-app = FastAPI(title="DoseKeep", version="0.5.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Keep reminders working while the web UI is closed."""
+    task = asyncio.create_task(notification_worker())
+    try:
+        yield
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(title="DoseKeep", version="0.6.0", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=master_key(),
@@ -115,6 +135,7 @@ def logout_account(request: Request):
 
 
 DEFAULT_SLOT_TIMES = {"morning": "08:00", "midday": "12:00", "evening": "19:00", "bedtime": "22:00"}
+DEFAULT_NOTIFICATION_SETTINGS = {"enabled": False, "server_url": "https://ntfy.sh", "topic": None}
 
 
 def administration_times(user: User) -> dict[str, str]:
@@ -123,6 +144,14 @@ def administration_times(user: User) -> dict[str, str]:
     except (TypeError, ValueError):
         configured = {}
     return {slot: configured.get(slot, default) for slot, default in DEFAULT_SLOT_TIMES.items()}
+
+
+def notification_settings(user: User) -> dict:
+    try:
+        configured = json.loads(user.notification_settings or "{}")
+    except (TypeError, ValueError):
+        configured = {}
+    return {**DEFAULT_NOTIFICATION_SETTINGS, **configured}
 
 
 @app.get("/api/v1/settings/administration-times", response_model=AdministrationTimeSettings)
@@ -152,6 +181,38 @@ def update_administration_times(
     ).delete(synchronize_session=False)
     session.commit()
     return administration_times(user)
+
+
+@app.get("/api/v1/settings/notifications", response_model=NotificationSettings)
+def get_notification_settings(user: User = Depends(current_user)):
+    return notification_settings(user)
+
+
+@app.put("/api/v1/settings/notifications", response_model=NotificationSettings)
+def update_notification_settings(
+    payload: NotificationSettings,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    try:
+        payload.validate_destination()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    user.notification_settings = json.dumps(payload.model_dump())
+    session.commit()
+    return notification_settings(user)
+
+
+@app.post("/api/v1/settings/notifications/test")
+def test_notification_settings(user: User = Depends(current_user)):
+    settings = notification_settings(user)
+    if not settings["enabled"] or not settings["topic"]:
+        raise HTTPException(status_code=422, detail="Enable reminders and enter an ntfy topic first")
+    try:
+        send_ntfy(settings["server_url"], settings["topic"], "DoseKeep test", "ntfy notifications are connected.")
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"Could not send ntfy test: {error}") from error
+    return {"ok": True}
 
 
 @app.post("/api/v1/scan/parse", response_model=DecodedCode)
@@ -454,6 +515,22 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
                 "as_required": False,
                 "prn_notes": None,
             }
+    # A run-out date is meaningful only for a regular plan. PRN usage varies,
+    # so show stock but avoid inventing a misleading date for it.
+    today = datetime.now(timezone.utc).astimezone(user_zone(user)).date()
+    for card in cards.values():
+        daily_dose_count = len(card["regular_times"])
+        available = card["quantity_remaining"] + card["quantity_in_dosette"]
+        card["daily_dose_count"] = daily_dose_count
+        if available <= 0:
+            card["stock_status"] = "out_of_stock"
+            card["estimated_run_out_date"] = today
+        elif daily_dose_count:
+            card["stock_status"] = "estimated"
+            card["estimated_run_out_date"] = today + timedelta(days=ceil(available / daily_dose_count))
+        else:
+            card["stock_status"] = "unknown"
+            card["estimated_run_out_date"] = None
     return sorted(cards.values(), key=lambda item: item["name"].casefold())
 
 
@@ -582,6 +659,86 @@ def dose_read(dose: ScheduledDose, session: Session) -> dict:
     }
 
 
+def process_due_notifications(session: Session) -> None:
+    """Generate due doses and send each configured ntfy reminder once."""
+    now = datetime.utcnow()
+    changed = False
+    for user in session.query(User).all():
+        settings = notification_settings(user)
+        if not settings["enabled"] or not settings["topic"]:
+            continue
+        generate_today_doses(user, session)
+        zone = user_zone(user)
+        local_today = datetime.now(timezone.utc).astimezone(zone).date()
+        day_start = datetime.combine(local_today, time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+        pending = (
+            session.query(ScheduledDose)
+            .filter(
+                ScheduledDose.user_id == user.id,
+                ScheduledDose.status.in_(("due", "snoozed")),
+                ScheduledDose.scheduled_for >= day_start,
+                ScheduledDose.due_at <= now,
+                ScheduledDose.notified_at.is_(None),
+            )
+            .order_by(ScheduledDose.due_at)
+            .all()
+        )
+        batches: dict[tuple[str, datetime], list[ScheduledDose]] = {}
+        for dose in pending:
+            # Regular doses at a slot share the same due_at, yielding one
+            # useful morning/evening notification. Snoozed doses acquire a
+            # new due_at and are therefore reminded separately later.
+            batches.setdefault((dose.administration_time, dose.due_at), []).append(dose)
+        for (administration_time, _), doses in batches.items():
+            details = []
+            has_no_stock = False
+            for dose in doses:
+                product = session.get(Product, dose.product_id)
+                medicine = product.name if product else "your medicine"
+                stock = sum(
+                    pack.quantity_remaining + pack.quantity_in_dosette
+                    for pack in session.query(Pack).filter_by(user_id=user.id, product_id=dose.product_id, status="active").all()
+                )
+                if stock <= 0:
+                    details.append(f"{medicine} (no stock recorded)")
+                    has_no_stock = True
+                else:
+                    details.append(f"{medicine} ({stock} available)")
+            slot = administration_time.title()
+            if has_no_stock:
+                title = f"DoseKeep: {slot} medicines due — stock warning"
+                tags = "warning,pill"
+            else:
+                title = f"DoseKeep: {slot} medicines due"
+                tags = "pill"
+            message = " · ".join(details)
+            try:
+                send_ntfy(settings["server_url"], settings["topic"], title, message, tags)
+            except Exception as error:
+                # Keep the dose unmarked for a later retry.
+                print(f"ntfy reminder failed for user {user.id}, {administration_time} batch: {error}")
+                continue
+            for dose in doses:
+                dose.notified_at = now
+            changed = True
+    if changed:
+        session.commit()
+
+
+def _run_notification_cycle() -> None:
+    with SessionLocal() as session:
+        process_due_notifications(session)
+
+
+async def notification_worker() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(_run_notification_cycle)
+        except Exception as error:
+            print(f"ntfy reminder worker failed: {error}")
+        await asyncio.sleep(60)
+
+
 def related_product_ids(user: User, product_id: int, session: Session) -> list[int]:
     """Include historic pack products linked to the same MediKeep medicine."""
     link = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product_id).first()
@@ -638,6 +795,7 @@ def action_scheduled_dose(
         dose.status = "snoozed"
         dose.due_at = now + timedelta(minutes=payload.snooze_minutes)
         dose.notes = payload.notes or f"Snoozed for {payload.snooze_minutes} minutes"
+        dose.notified_at = None
     elif payload.action == "skipped":
         dose.status = "skipped"
         dose.actioned_at = now

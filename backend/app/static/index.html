@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#14532d" />
-    <link rel="manifest" href="/manifest.webmanifest?v=0.18.0" />
-    <link rel="stylesheet" href="/styles.css?v=0.18.0" />
+    <link rel="manifest" href="/manifest.webmanifest?v=0.20.0" />
+    <link rel="stylesheet" href="/styles.css?v=0.20.0" />
     <title>DoseKeep</title>
   </head>
   <body>
@@ -139,6 +139,21 @@
             <p id="administration-times-result" aria-live="polite"></p>
           </form>
         </section>
+        <section>
+          <h2>Medication reminders <span class="optional">ntfy</span></h2>
+          <p>Send reminders to your own ntfy topic when a scheduled dose is due. Use a private, hard-to-guess topic.</p>
+          <form id="notification-settings-form">
+            <label class="schedule-option"><input id="notifications-enabled" type="checkbox" /> Enable medication reminders</label>
+            <label for="ntfy-server-url">ntfy server URL</label>
+            <input id="ntfy-server-url" type="url" inputmode="url" value="https://ntfy.sh" required />
+            <label for="ntfy-topic">ntfy topic</label>
+            <input id="ntfy-topic" autocomplete="off" maxlength="100" pattern="[A-Za-z0-9_-]+" placeholder="your-private-dosekeep-topic" />
+            <p class="hint">DoseKeep stores this destination only for your account. It sends a reminder once per due dose, and again only if you snooze it.</p>
+            <button type="submit">Save notification settings</button>
+            <button id="test-notifications" type="button" class="secondary compact">Send test notification</button>
+            <p id="notification-settings-result" aria-live="polite"></p>
+          </form>
+        </section>
         <button id="edit-medikeep-settings" type="button" class="secondary compact">MediKeep connection settings</button>
         <section id="medikeep-setup" hidden>
           <div class="section-heading">
@@ -167,6 +182,6 @@
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.19.0"></script>
+    <script src="/app.js?v=0.20.0"></script>
   </body>
 </html>

@@ -46,6 +46,20 @@ class AdministrationTimeSettings(BaseModel):
     bedtime: str = Field(default="22:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
+class NotificationSettings(BaseModel):
+    """Per-account ntfy destination for dose reminders."""
+
+    enabled: bool = False
+    server_url: str = Field(default="https://ntfy.sh", min_length=8, max_length=500)
+    topic: str | None = Field(default=None, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")
+
+    def validate_destination(self) -> None:
+        if self.enabled and not self.topic:
+            raise ValueError("Enter an ntfy topic before enabling reminders")
+        if not self.server_url.startswith("https://"):
+            raise ValueError("Use an HTTPS ntfy server URL")
+
+
 class MediKeepConnectionCreate(BaseModel):
     base_url: str = Field(min_length=8, max_length=500)
     patient_id: int = Field(default=1, gt=0)
@@ -153,6 +167,9 @@ class MedicineOverviewRead(BaseModel):
     regular_times: list[str] = []
     as_required: bool = False
     prn_notes: str | None = None
+    daily_dose_count: int = 0
+    estimated_run_out_date: date | None = None
+    stock_status: str = "unknown"
 
 
 class MedicationScheduleUpdate(BaseModel):
