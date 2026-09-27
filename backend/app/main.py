@@ -14,12 +14,17 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 import qrcode
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .auth import current_user, decrypt_config, encrypt_config, hash_password, master_key, verify_password
 from .catalogue import lookup_french_gtin
@@ -1329,8 +1334,7 @@ def list_today_doses(user: User = Depends(current_user), session: Session = Depe
     return [dose_read(dose, session, display_names) for dose in doses]
 
 
-@app.get("/api/v1/reports/compliance")
-def compliance_report(days: int = 7, user: User = Depends(current_user), session: Session = Depends(get_session)):
+def build_compliance_report(user: User, session: Session, days: int = 7) -> dict:
     """Summarise documented regular-dose outcomes for a recent period.
 
     PRN doses are deliberately excluded: they are not expected doses, so they
@@ -1398,6 +1402,77 @@ def compliance_report(days: int = 7, user: User = Depends(current_user), session
         "medicines": sorted(by_product.values(), key=lambda item: (-item["expected"], item["medicine_name"])),
         "exceptions": exceptions[:10],
     }
+
+
+@app.get("/api/v1/reports/compliance")
+def compliance_report(days: int = 7, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    return build_compliance_report(user, session, days)
+
+
+@app.get("/api/v1/reports/compliance.pdf")
+def compliance_report_pdf(days: int = 7, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    report = build_compliance_report(user, session, days)
+    buffer = BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+        title="DoseKeep medication compliance report",
+    )
+    styles = getSampleStyleSheet()
+    story = [
+        Paragraph("DoseKeep", styles["Title"]),
+        Paragraph("Medication compliance report", styles["Heading1"]),
+        Paragraph(f"{report['start_date']} to {report['end_date']} · regular doses only · generated {datetime.now().strftime('%d %b %Y %H:%M')}", styles["Normal"]),
+        Spacer(1, 6 * mm),
+    ]
+    rate = "No completed doses" if report["taken_rate"] is None else f"{report['taken_rate']}% taken"
+    summary = [
+        ["Taken rate", "Taken", "Skipped", "Not recorded"],
+        [rate, str(report["taken"]), str(report["skipped"]), str(report["missed"])],
+    ]
+    table = Table(summary, colWidths=[42 * mm] * 4)
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#6373D2")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("GRID", (0, 0), (-1, -1), .25, colors.HexColor("#DCE1ED")),
+        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#F7F8FC")),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+    ]))
+    story.extend([table, Spacer(1, 7 * mm)])
+    story.append(Paragraph("By medicine", styles["Heading2"]))
+    medicine_rows = [["Medicine", "Taken", "Skipped", "Not recorded", "Taken rate"]]
+    for medicine in report["medicines"]:
+        medicine_rows.append([
+            Paragraph(html.escape(medicine["medicine_name"]), styles["BodyText"]),
+            str(medicine["taken"]),
+            str(medicine["skipped"]),
+            str(medicine["missed"]),
+            "—" if medicine["taken_rate"] is None else f"{medicine['taken_rate']}%",
+        ])
+    if len(medicine_rows) == 1:
+        medicine_rows.append(["No regular doses recorded in this period.", "", "", "", ""])
+    medicine_table = Table(medicine_rows, colWidths=[71 * mm, 23 * mm, 25 * mm, 30 * mm, 25 * mm], repeatRows=1)
+    medicine_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7462BB")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("GRID", (0, 0), (-1, -1), .25, colors.HexColor("#DCE1ED")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.extend([medicine_table, Spacer(1, 6 * mm)])
+    story.append(Paragraph("This report records actions documented in DoseKeep. It is not prescribing or clinical advice.", styles["Italic"]))
+    document.build(story)
+    filename = f"dosekeep-compliance-{days}-days.pdf"
+    return Response(content=buffer.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 def apply_scheduled_dose_action(dose: ScheduledDose, user: User, payload: ScheduledDoseAction, session: Session) -> None:

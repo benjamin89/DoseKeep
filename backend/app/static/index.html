@@ -129,7 +129,10 @@
             <h2>Medication compliance</h2>
             <p>A record of regular doses documented in DoseKeep. PRN doses are not included.</p>
           </div>
-          <button id="refresh-compliance" type="button" class="secondary compact">Refresh</button>
+          <div class="heading-actions">
+            <button id="download-compliance" type="button" class="secondary compact">Download PDF</button>
+            <button id="refresh-compliance" type="button" class="secondary compact">Refresh</button>
+          </div>
         </div>
         <div class="report-period" aria-label="Report period">
           <button type="button" data-compliance-days="7" class="current">7 days</button>
@@ -215,6 +218,6 @@
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.32.0"></script>
+    <script src="/app.js?v=0.33.0"></script>
   </body>
 </html>

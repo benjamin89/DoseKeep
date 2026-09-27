@@ -1,5 +1,5 @@
-const CACHE = "dosekeep-v36";
-const ASSETS = ["/", "/styles.css?v=0.30.0", "/app.js?v=0.32.0", "/manifest.webmanifest?v=0.29.0"];
+const CACHE = "dosekeep-v37";
+const ASSETS = ["/", "/styles.css?v=0.30.0", "/app.js?v=0.33.0", "/manifest.webmanifest?v=0.29.0"];
 
 self.addEventListener("install", event => {
   self.skipWaiting();

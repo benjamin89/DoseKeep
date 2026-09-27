@@ -991,6 +991,9 @@ document.querySelector("#refresh-packs").addEventListener("click", loadPacks);
 document.querySelector("#refresh-medicines").addEventListener("click", loadMedicines);
 document.querySelector("#refresh-administration").addEventListener("click", loadAdministration);
 document.querySelector("#refresh-compliance").addEventListener("click", loadComplianceReport);
+document.querySelector("#download-compliance").addEventListener("click", () => {
+  window.location.assign(`/api/v1/reports/compliance.pdf?days=${complianceDays}`);
+});
 document.querySelector("#refresh-households").addEventListener("click", loadHouseholds);
 document.querySelector("#refresh-admin").addEventListener("click", loadAdminOverview);
 document.querySelector("#refresh-medikeep").addEventListener("click", loadMediKeep);
