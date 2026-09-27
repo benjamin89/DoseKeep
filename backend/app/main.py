@@ -215,6 +215,14 @@ def cabinet_qr_data_url(url: str) -> str:
     return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
 
 
+def household_display_names(household: Household, session: Session) -> dict[int, str]:
+    """Use the household creator's editable common names for guest-facing stock."""
+    return {
+        item.product_id: item.common_name
+        for item in session.query(ProductCommonName).filter_by(user_id=household.created_by_user_id).all()
+    }
+
+
 def household_invite_url(record: HouseholdInvite) -> str | None:
     try:
         token = decrypt_config(record.encrypted_token)["token"]
@@ -877,6 +885,7 @@ def cabinet_guest_page(token: str, request: Request, session: Session = Depends(
     household = session.get(Household, link.household_id)
     actor = cabinet_actor_name(request, link, session)
     signed_in_user = session.get(User, request.session.get("user_id"))
+    display_names = household_display_names(household, session)
     packs = session.query(Pack).filter_by(household_id=link.household_id, status="active").filter(Pack.quantity_remaining > 0).all()
     totals: dict[int, int] = {}
     for pack in packs:
@@ -884,7 +893,7 @@ def cabinet_guest_page(token: str, request: Request, session: Session = Depends(
     items = []
     for product_id, quantity in totals.items():
         product = session.get(Product, product_id)
-        name = html.escape(product.name if product else "Medicine")
+        name = html.escape(display_names.get(product_id) or (product.name if product else "Medicine"))
         action = f'<button data-product-id="{product_id}">Record one used</button>' if actor else ""
         items.append(f"<section><h2>{name}</h2><p>{quantity} item{'s' if quantity != 1 else ''} available</p>{action}</section>")
     content = "".join(items) or "<p>No cabinet stock is currently recorded.</p>"
@@ -948,7 +957,8 @@ async def record_cabinet_guest_use(token: str, request: Request, session: Sessio
     session.add(SupplyEvent(pack_id=pack.id, event_type="taken_from_pack", quantity=1, notes="Shared cabinet use", actor_name=actor))
     session.commit()
     product = session.get(Product, product_id)
-    return {"ok": True, "product_name": product.name if product else "Item"}
+    household = session.get(Household, link.household_id)
+    return {"ok": True, "product_name": household_display_names(household, session).get(product_id) or (product.name if product else "Item")}
 
 
 @app.put("/api/v1/packs/{pack_id}/household", response_model=PackRead)
