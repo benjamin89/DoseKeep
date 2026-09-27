@@ -106,17 +106,30 @@ async function loadAdministration() {
         const description = document.createElement("p");
         const details = [dose.dosage, dose.route].filter(Boolean).join(" · ");
         const dueAt = new Date(dose.due_at);
-        const future = dueAt.getTime() > Date.now();
+        const millisecondsUntilDue = dueAt.getTime() - Date.now();
+        const future = millisecondsUntilDue > 0;
+        const canRecordEarly = dose.status === "due" && future && millisecondsUntilDue <= 60 * 60 * 1000;
         const dueTime = dueAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         let doseState = dose.status;
-        if (future && dose.status === "due") doseState = `scheduled for ${dueTime}`;
+        if (future && dose.status === "due") doseState = canRecordEarly ? "ready to record" : "";
         if (future && dose.status === "snoozed") doseState = `snoozed until ${dueTime}`;
-        description.textContent = `${dose.medicine_name}${details ? ` — ${details}` : ""} · ${doseState}`;
+        if (dose.status === "taken" && dose.actioned_at) {
+          const takenAt = new Date(dose.actioned_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          doseState = `taken at ${takenAt}`;
+        }
+        if (dose.status === "skipped" && dose.actioned_at) {
+          const skippedAt = new Date(dose.actioned_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          doseState = `skipped at ${skippedAt}`;
+        }
+        description.textContent = `${dose.medicine_name}${details ? ` — ${details}` : ""}${doseState ? ` · ${doseState}` : ""}`;
         item.append(description);
-        if (!future && ["due", "snoozed"].includes(dose.status)) {
+        if (canRecordEarly || (!future && ["due", "snoozed"].includes(dose.status))) {
           const actions = document.createElement("div");
           actions.className = "dose-actions";
-          [["Taken", "taken"], ["Skip", "skipped"], ["Snooze 15 min", "snooze"]].forEach(([label, action]) => {
+          const choices = canRecordEarly
+            ? [["Taken", "taken"]]
+            : [["Taken", "taken"], ["Skip", "skipped"], ["Snooze 15 min", "snooze"]];
+          choices.forEach(([label, action]) => {
             const control = button(label, action === "skipped" ? "outline" : "secondary compact");
             control.addEventListener("click", async () => {
               control.disabled = true;

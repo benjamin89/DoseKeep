@@ -176,7 +176,7 @@ def update_administration_times(
         ScheduledDose.user_id == user.id,
         ScheduledDose.scheduled_for >= start,
         ScheduledDose.scheduled_for < end,
-        ScheduledDose.administration_time.in_(DEFAULT_SLOT_TIMES),
+        ScheduledDose.administration_time.in_(list(DEFAULT_SLOT_TIMES)),
         ScheduledDose.status.in_(("due", "snoozed")),
     ).delete(synchronize_session=False)
     session.commit()
@@ -588,6 +588,8 @@ def generate_today_doses(user: User, session: Session) -> None:
     """Materialise today’s regular plan as actionable doses, idempotently."""
     zone = user_zone(user)
     local_today = datetime.now(timezone.utc).astimezone(zone).date()
+    day_start = datetime.combine(local_today, time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+    day_end = day_start + timedelta(days=1)
     all_by_id = {}
     try:
         all_by_id = {item.id: item for item in all_medications(user_medikeep_config(user, session))}
@@ -623,6 +625,27 @@ def generate_today_doses(user: User, session: Session) -> None:
                 scheduled_for=due,
             ).first()
             if not exists:
+                # If the user changed a slot after today's dose was created,
+                # move the still-pending record instead of displaying both
+                # the old time and the newly configured one.
+                exists = (
+                    session.query(ScheduledDose)
+                    .filter(
+                        ScheduledDose.user_id == user.id,
+                        ScheduledDose.product_id == schedule.product_id,
+                        ScheduledDose.administration_time == slot,
+                        ScheduledDose.scheduled_for >= day_start,
+                        ScheduledDose.scheduled_for < day_end,
+                        ScheduledDose.status == "due",
+                    )
+                    .first()
+                )
+                if exists:
+                    exists.scheduled_for = due
+                    exists.due_at = due
+                    exists.notified_at = None
+                    generated = True
+            if not exists:
                 session.add(
                     ScheduledDose(
                         user_id=user.id,
@@ -637,7 +660,25 @@ def generate_today_doses(user: User, session: Session) -> None:
         session.commit()
 
 
-def dose_read(dose: ScheduledDose, session: Session) -> dict:
+def medikeep_display_names(user: User, session: Session) -> dict[int, str]:
+    """Return linked MediKeep generic names, keyed by local product id.
+
+    A local product remains the safe fallback when MediKeep is not connected or
+    temporarily unavailable, so medication administration is never blocked by
+    the external service.
+    """
+    try:
+        medicines = {item.id: item for item in all_medications(user_medikeep_config(user, session))}
+    except (MediKeepUnavailable, HTTPException):
+        return {}
+    return {
+        link.product_id: medicine.name
+        for link in session.query(MediKeepLink).filter_by(user_id=user.id).all()
+        if (medicine := medicines.get(link.medikeep_medication_id))
+    }
+
+
+def dose_read(dose: ScheduledDose, session: Session, display_names: dict[int, str] | None = None) -> dict:
     product = session.get(Product, dose.product_id)
     stock = sum(
         pack.quantity_remaining + pack.quantity_in_dosette
@@ -646,7 +687,7 @@ def dose_read(dose: ScheduledDose, session: Session) -> dict:
     return {
         "id": dose.id,
         "product_id": dose.product_id,
-        "medicine_name": product.name if product else "Unknown medicine",
+        "medicine_name": (display_names or {}).get(dose.product_id) or (product.name if product else "Unknown medicine"),
         "dosage": product.strength if product else None,
         "route": None,
         "administration_time": dose.administration_time,
@@ -668,6 +709,7 @@ def process_due_notifications(session: Session) -> None:
         if not settings["enabled"] or not settings["topic"]:
             continue
         generate_today_doses(user, session)
+        display_names = medikeep_display_names(user, session)
         zone = user_zone(user)
         local_today = datetime.now(timezone.utc).astimezone(zone).date()
         day_start = datetime.combine(local_today, time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
@@ -694,7 +736,7 @@ def process_due_notifications(session: Session) -> None:
             has_no_stock = False
             for dose in doses:
                 product = session.get(Product, dose.product_id)
-                medicine = product.name if product else "your medicine"
+                medicine = display_names.get(dose.product_id) or (product.name if product else "your medicine")
                 stock = sum(
                     pack.quantity_remaining + pack.quantity_in_dosette
                     for pack in session.query(Pack).filter_by(user_id=user.id, product_id=dose.product_id, status="active").all()
@@ -775,7 +817,8 @@ def list_today_doses(user: User = Depends(current_user), session: Session = Depe
         .order_by(ScheduledDose.due_at)
         .all()
     )
-    return [dose_read(dose, session) for dose in doses]
+    display_names = medikeep_display_names(user, session)
+    return [dose_read(dose, session, display_names) for dose in doses]
 
 
 @app.post("/api/v1/doses/{dose_id}/action", response_model=ScheduledDoseRead)
@@ -791,6 +834,15 @@ def action_scheduled_dose(
     if dose.status in {"taken", "skipped"}:
         raise HTTPException(status_code=409, detail="This dose has already been actioned")
     now = datetime.utcnow()
+    if now < dose.due_at:
+        early_window = dose.due_at - timedelta(hours=1)
+        if payload.action != "taken":
+            raise HTTPException(status_code=409, detail="A dose can only be skipped or snoozed once it is due")
+        if now < early_window:
+            raise HTTPException(
+                status_code=409,
+                detail="This dose can be recorded from one hour before its scheduled time",
+            )
     if payload.action == "snooze":
         dose.status = "snoozed"
         dose.due_at = now + timedelta(minutes=payload.snooze_minutes)
@@ -811,7 +863,7 @@ def action_scheduled_dose(
         dose.notes = payload.notes
     session.commit()
     session.refresh(dose)
-    return dose_read(dose, session)
+    return dose_read(dose, session, medikeep_display_names(user, session))
 
 
 @app.post("/api/v1/products/{product_id}/prn", response_model=ScheduledDoseRead, status_code=201)
@@ -842,7 +894,7 @@ def record_prn_dose(product_id: int, user: User = Depends(current_user), session
     session.add(record)
     session.commit()
     session.refresh(record)
-    return dose_read(record, session)
+    return dose_read(record, session, medikeep_display_names(user, session))
 
 
 @app.post("/api/v1/products", response_model=ProductRead, status_code=201)
