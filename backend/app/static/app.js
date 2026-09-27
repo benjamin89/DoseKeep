@@ -62,7 +62,7 @@ async function showSignedIn(status) {
   appContent.hidden = false;
   document.querySelector("#welcome").textContent = `Signed in as ${status.user.email}. Scan a pack, check its expiry, then keep your stock up to date.`;
   document.querySelector("#account-settings").textContent = `Signed in as ${status.user.email}. Your packs and any MediKeep connection are private to this DoseKeep account.`;
-  showPage("medicines");
+  showPage("administration");
   await Promise.all([loadMedicines(), loadPacks(), loadMediKeep(), loadAdministrationTimes(), loadNotificationSettings()]);
   await loadMediKeepConnection(status.medikeep_connected);
 }
@@ -105,9 +105,15 @@ async function loadAdministration() {
         item.className = "due-dose";
         const description = document.createElement("p");
         const details = [dose.dosage, dose.route].filter(Boolean).join(" · ");
-        description.textContent = `${dose.medicine_name}${details ? ` — ${details}` : ""} · ${dose.status}`;
+        const dueAt = new Date(dose.due_at);
+        const future = dueAt.getTime() > Date.now();
+        const dueTime = dueAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        let doseState = dose.status;
+        if (future && dose.status === "due") doseState = `scheduled for ${dueTime}`;
+        if (future && dose.status === "snoozed") doseState = `snoozed until ${dueTime}`;
+        description.textContent = `${dose.medicine_name}${details ? ` — ${details}` : ""} · ${doseState}`;
         item.append(description);
-        if (["due", "snoozed"].includes(dose.status)) {
+        if (!future && ["due", "snoozed"].includes(dose.status)) {
           const actions = document.createElement("div");
           actions.className = "dose-actions";
           [["Taken", "taken"], ["Skip", "skipped"], ["Snooze 15 min", "snooze"]].forEach(([label, action]) => {

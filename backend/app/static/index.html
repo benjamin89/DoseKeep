@@ -32,8 +32,8 @@
       <p id="welcome">Scan a pack, check the expiry, then keep stock and dosette allocations up to date.</p>
       <button id="sign-out" class="secondary compact account-button">Sign out</button>
       <nav class="page-nav" aria-label="DoseKeep pages">
-        <button type="button" data-page-target="medicines" class="current">Medicines</button>
-        <button type="button" data-page-target="administration">What to take</button>
+        <button type="button" data-page-target="medicines">Medicines</button>
+        <button type="button" data-page-target="administration" class="current">Medication administration record</button>
         <button type="button" data-page-target="settings">Settings</button>
       </nav>
       <div id="page-medicines" class="app-page">
@@ -113,8 +113,8 @@
       <section id="page-administration" class="app-page" hidden>
         <div class="section-heading">
           <div>
-            <h2>What to take</h2>
-            <p>Current planned medicines only. Replaced or stopped MediKeep medicines are excluded here, while their remaining stock stays visible under Medicines.</p>
+            <h2>Medication administration record</h2>
+            <p>Today’s planned medicines and doses. Future doses are shown as scheduled; use this record when a dose is due to mark it taken, skipped, or snoozed.</p>
           </div>
           <button id="refresh-administration" type="button" class="secondary compact">Refresh</button>
         </div>
@@ -182,6 +182,6 @@
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.20.0"></script>
+    <script src="/app.js?v=0.21.0"></script>
   </body>
 </html>
