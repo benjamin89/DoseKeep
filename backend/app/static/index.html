@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#14532d" />
     <link rel="manifest" href="/manifest.webmanifest?v=0.29.0" />
-    <link rel="stylesheet" href="/styles.css?v=0.29.0" />
+    <link rel="stylesheet" href="/styles.css?v=0.30.0" />
     <title>DoseKeep</title>
   </head>
   <body>
@@ -33,6 +33,7 @@
       <button id="sign-out" class="secondary compact account-button">Sign out</button>
       <nav class="page-nav" aria-label="DoseKeep pages">
         <button type="button" data-page-target="administration" class="current">Medication administration record</button>
+        <button type="button" data-page-target="report">Reports</button>
         <button type="button" data-page-target="medicines">Medicines</button>
         <button type="button" data-page-target="household">Household</button>
         <button id="admin-nav" type="button" data-page-target="admin" hidden>System admin</button>
@@ -122,6 +123,21 @@
         </div>
         <div id="administration" aria-live="polite">Loading administration plan…</div>
       </section>
+      <section id="page-report" class="app-page" hidden>
+        <div class="section-heading">
+          <div>
+            <h2>Medication compliance</h2>
+            <p>A record of regular doses documented in DoseKeep. PRN doses are not included.</p>
+          </div>
+          <button id="refresh-compliance" type="button" class="secondary compact">Refresh</button>
+        </div>
+        <div class="report-period" aria-label="Report period">
+          <button type="button" data-compliance-days="7" class="current">7 days</button>
+          <button type="button" data-compliance-days="30">30 days</button>
+          <button type="button" data-compliance-days="90">90 days</button>
+        </div>
+        <div id="compliance-report" aria-live="polite">Loading compliance report…</div>
+      </section>
       <section id="page-household" class="app-page" hidden>
         <div class="section-heading"><div><h2>Household & shared cabinet</h2><p>Shared packs are visible to household members; medication plans and MARs stay private.</p></div><button id="refresh-households" type="button" class="secondary compact">Refresh</button></div>
         <div id="households" aria-live="polite">Loading households…</div>
@@ -199,6 +215,6 @@
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.31.0"></script>
+    <script src="/app.js?v=0.32.0"></script>
   </body>
 </html>

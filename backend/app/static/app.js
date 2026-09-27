@@ -27,6 +27,7 @@ const administrationTimesResult = document.querySelector("#administration-times-
 const notificationSettingsForm = document.querySelector("#notification-settings-form");
 const notificationSettingsResult = document.querySelector("#notification-settings-result");
 const administrationContainer = document.querySelector("#administration");
+const complianceContainer = document.querySelector("#compliance-report");
 const householdsContainer = document.querySelector("#households");
 const householdResult = document.querySelector("#household-result");
 const deviceTokenResult = document.querySelector("#device-token-result");
@@ -36,6 +37,7 @@ const adminOverview = document.querySelector("#admin-overview");
 const pages = {
   medicines: document.querySelector("#page-medicines"),
   administration: document.querySelector("#page-administration"),
+  report: document.querySelector("#page-report"),
   household: document.querySelector("#page-household"),
   admin: document.querySelector("#page-admin"),
   settings: document.querySelector("#page-settings"),
@@ -43,6 +45,7 @@ const pages = {
 let scanControls;
 let savedScanProductId = null;
 let currentRaw;
+let complianceDays = 7;
 
 // The API stores naive datetimes as UTC. Tell the browser that explicitly;
 // otherwise a timestamp such as 20:00 UTC is interpreted as 20:00 local.
@@ -68,6 +71,7 @@ function showPage(name) {
     button.classList.toggle("current", button.dataset.pageTarget === name);
   });
   if (name === "administration") loadAdministration();
+  if (name === "report") loadComplianceReport();
   if (name === "household") loadHouseholds();
   if (name === "admin") loadAdminOverview();
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -434,6 +438,77 @@ async function loadAdministration() {
     }
   } catch (error) {
     administrationContainer.textContent = `Could not load administration plan: ${error.message}`;
+  }
+}
+
+async function loadComplianceReport() {
+  complianceContainer.textContent = "Loading compliance report…";
+  try {
+    const report = await api(`/api/v1/reports/compliance?days=${complianceDays}`);
+    complianceContainer.replaceChildren();
+    const period = document.createElement("p");
+    period.className = "medicine-note";
+    period.textContent = `${report.start_date} to ${report.end_date} · regular doses only`;
+    complianceContainer.append(period);
+
+    const summary = document.createElement("div");
+    summary.className = "report-summary";
+    const stat = (label, value, emphasis = "") => {
+      const card = document.createElement("div");
+      card.className = `report-stat ${emphasis}`.trim();
+      const number = document.createElement("strong");
+      number.textContent = value;
+      const caption = document.createElement("span");
+      caption.textContent = label;
+      card.append(number, caption);
+      return card;
+    };
+    summary.append(
+      stat("taken rate", report.taken_rate === null ? "—" : `${report.taken_rate}%`, "primary"),
+      stat("taken", report.taken),
+      stat("skipped", report.skipped),
+      stat("not recorded", report.missed),
+    );
+    complianceContainer.append(summary);
+    const explanation = document.createElement("p");
+    explanation.className = "hint";
+    explanation.textContent = report.expected
+      ? `${report.taken} of ${report.expected} due doses were recorded as taken. ${report.pending ? `${report.pending} currently snoozed dose${report.pending === 1 ? " is" : "s are"} still pending.` : ""}`
+      : "No completed regular-dose opportunities have been recorded for this period yet.";
+    complianceContainer.append(explanation);
+
+    if (report.medicines.length) {
+      const heading = document.createElement("h3");
+      heading.textContent = "By medicine";
+      complianceContainer.append(heading);
+      report.medicines.forEach(medicine => {
+        const row = document.createElement("article");
+        row.className = "report-medicine";
+        const name = document.createElement("strong");
+        name.textContent = medicine.medicine_name;
+        const detail = document.createElement("span");
+        const rate = medicine.taken_rate === null ? "No completed doses" : `${medicine.taken_rate}% taken`;
+        detail.textContent = `${rate} · ${medicine.taken}/${medicine.expected} taken${medicine.skipped ? ` · ${medicine.skipped} skipped` : ""}${medicine.missed ? ` · ${medicine.missed} not recorded` : ""}`;
+        row.append(name, detail);
+        complianceContainer.append(row);
+      });
+    }
+    if (report.exceptions.length) {
+      const heading = document.createElement("h3");
+      heading.textContent = "Recent exceptions";
+      complianceContainer.append(heading);
+      const list = document.createElement("ul");
+      list.className = "report-exceptions";
+      report.exceptions.forEach(item => {
+        const entry = document.createElement("li");
+        const when = utcDate(item.actioned_at || item.scheduled_for).toLocaleString([], { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+        entry.textContent = `${item.medicine_name} · ${item.outcome === "missed" ? "not recorded" : "skipped"} · ${when}`;
+        list.append(entry);
+      });
+      complianceContainer.append(list);
+    }
+  } catch (error) {
+    complianceContainer.textContent = `Could not load compliance report: ${error.message}`;
   }
 }
 
@@ -915,11 +990,19 @@ document.querySelector("#parse").addEventListener("click", () => findProduct(doc
 document.querySelector("#refresh-packs").addEventListener("click", loadPacks);
 document.querySelector("#refresh-medicines").addEventListener("click", loadMedicines);
 document.querySelector("#refresh-administration").addEventListener("click", loadAdministration);
+document.querySelector("#refresh-compliance").addEventListener("click", loadComplianceReport);
 document.querySelector("#refresh-households").addEventListener("click", loadHouseholds);
 document.querySelector("#refresh-admin").addEventListener("click", loadAdminOverview);
 document.querySelector("#refresh-medikeep").addEventListener("click", loadMediKeep);
 document.querySelectorAll("[data-page-target]").forEach(button => {
   button.addEventListener("click", () => showPage(button.dataset.pageTarget));
+});
+document.querySelectorAll("[data-compliance-days]").forEach(button => {
+  button.addEventListener("click", () => {
+    complianceDays = Number(button.dataset.complianceDays);
+    document.querySelectorAll("[data-compliance-days]").forEach(control => control.classList.toggle("current", control === button));
+    loadComplianceReport();
+  });
 });
 document.querySelector("#manage-medikeep").addEventListener("click", () => {
   medikeepSetup.hidden = false;

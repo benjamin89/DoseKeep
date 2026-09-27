@@ -1329,6 +1329,77 @@ def list_today_doses(user: User = Depends(current_user), session: Session = Depe
     return [dose_read(dose, session, display_names) for dose in doses]
 
 
+@app.get("/api/v1/reports/compliance")
+def compliance_report(days: int = 7, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    """Summarise documented regular-dose outcomes for a recent period.
+
+    PRN doses are deliberately excluded: they are not expected doses, so they
+    would distort a regular-administration report. A currently snoozed dose is
+    shown as pending rather than counted as missed.
+    """
+    if days not in {7, 30, 90}:
+        raise HTTPException(status_code=422, detail="Choose a 7, 30 or 90 day report")
+    generate_today_doses(user, session)
+    now = datetime.utcnow()
+    zone = user_zone(user)
+    local_today = now.replace(tzinfo=timezone.utc).astimezone(zone).date()
+    local_start = local_today - timedelta(days=days - 1)
+    start = datetime.combine(local_start, time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+    doses = (
+        session.query(ScheduledDose)
+        .filter(
+            ScheduledDose.user_id == user.id,
+            ScheduledDose.administration_time.in_(list(DEFAULT_SLOT_TIMES)),
+            ScheduledDose.scheduled_for >= start,
+            ScheduledDose.scheduled_for <= now,
+        )
+        .order_by(ScheduledDose.scheduled_for.desc())
+        .all()
+    )
+    names = medication_display_names(user, session)
+    totals = {"taken": 0, "skipped": 0, "missed": 0, "pending": 0}
+    by_product: dict[int, dict] = {}
+    exceptions = []
+    for dose in doses:
+        outcome = "missed"
+        if dose.status == "taken":
+            outcome = "taken"
+        elif dose.status == "skipped":
+            outcome = "skipped"
+        elif dose.status == "snoozed" and dose.due_at > now:
+            outcome = "pending"
+        totals[outcome] += 1
+        product = by_product.setdefault(
+            dose.product_id,
+            {"product_id": dose.product_id, "medicine_name": names.get(dose.product_id) or (session.get(Product, dose.product_id).name if session.get(Product, dose.product_id) else "Unknown medicine"), "taken": 0, "skipped": 0, "missed": 0, "pending": 0},
+        )
+        product[outcome] += 1
+        if outcome in {"skipped", "missed"}:
+            exceptions.append({
+                "medicine_name": product["medicine_name"],
+                "outcome": outcome,
+                "scheduled_for": dose.scheduled_for,
+                "actioned_at": dose.actioned_at,
+            })
+    expected = totals["taken"] + totals["skipped"] + totals["missed"]
+    for item in by_product.values():
+        item["expected"] = item["taken"] + item["skipped"] + item["missed"]
+        item["taken_rate"] = round((item["taken"] / item["expected"]) * 100) if item["expected"] else None
+    return {
+        "days": days,
+        "start_date": local_start.isoformat(),
+        "end_date": local_today.isoformat(),
+        "taken": totals["taken"],
+        "skipped": totals["skipped"],
+        "missed": totals["missed"],
+        "pending": totals["pending"],
+        "expected": expected,
+        "taken_rate": round((totals["taken"] / expected) * 100) if expected else None,
+        "medicines": sorted(by_product.values(), key=lambda item: (-item["expected"], item["medicine_name"])),
+        "exceptions": exceptions[:10],
+    }
+
+
 def apply_scheduled_dose_action(dose: ScheduledDose, user: User, payload: ScheduledDoseAction, session: Session) -> None:
     if dose.status in {"taken", "skipped"}:
         raise HTTPException(status_code=409, detail="This dose has already been actioned")
