@@ -208,10 +208,14 @@ async function loadAdministration() {
           const actions = document.createElement("div");
           actions.className = "dose-actions";
           const choices = canRecordEarly
-            ? [["Taken", "taken"]]
-            : [["Taken", "taken"], ["Skip", "skipped"], ["Snooze 15 min", "snooze"]];
-          choices.forEach(([label, action]) => {
-            const control = button(label, action === "skipped" ? "outline" : "secondary compact");
+            ? [["Taken", "taken", "primary-dose"]]
+            : [
+              ["Skip", "skipped", "outline compact"],
+              ["Taken", "taken", "primary-dose"],
+              ["Snooze 15 min", "snooze", "secondary compact"],
+            ];
+          choices.forEach(([label, action, className]) => {
+            const control = button(label, className);
             control.addEventListener("click", async () => {
               control.disabled = true;
               try {

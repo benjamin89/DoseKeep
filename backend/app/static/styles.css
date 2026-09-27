@@ -30,6 +30,7 @@ pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .stock-row input { margin: 0; min-width: 0; }
 .stock-row button, .dose-actions button { margin: 0; }
 .dose-actions .outline { background: white; color: #334155; border: 1px solid #94a3b8; }
+.dose-actions .primary-dose { background: #166534; padding: .95rem; font-size: 1.05rem; }
 .recent-events { margin: .9rem 0 0; padding-left: 1.25rem; color: #475569; font-size: .9rem; }
 .hint { margin: .45rem 0; color: #64748b; font-size: .85rem; }
 .medikeep-card { display: flex; gap: .75rem; justify-content: space-between; align-items: center; border-top: 1px solid #e2e8f0; padding: .85rem 0; }

@@ -774,7 +774,22 @@ def generate_today_doses(user: User, session: Session) -> None:
             external = all_by_id.get(link.medikeep_medication_id)
             if external and external.status != "active":
                 continue
-        for slot in json.loads(schedule.regular_times):
+        scheduled_slots = set(json.loads(schedule.regular_times))
+        # Also clear old pending records when a plan was changed before this
+        # cleanup was available. This repairs today's duplicate slot on load.
+        stale_doses = session.query(ScheduledDose).filter(
+            ScheduledDose.user_id == user.id,
+            ScheduledDose.product_id == schedule.product_id,
+            ScheduledDose.scheduled_for >= day_start,
+            ScheduledDose.scheduled_for < day_end,
+            ScheduledDose.administration_time.in_(list(DEFAULT_SLOT_TIMES)),
+            ScheduledDose.status.in_(("due", "snoozed")),
+        )
+        if scheduled_slots:
+            stale_doses = stale_doses.filter(~ScheduledDose.administration_time.in_(scheduled_slots))
+        if stale_doses.delete(synchronize_session=False):
+            generated = True
+        for slot in scheduled_slots:
             configured_time = slot_times.get(slot)
             if not configured_time:
                 continue
