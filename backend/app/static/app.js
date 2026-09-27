@@ -143,11 +143,13 @@ async function loadHouseholds() {
         guestLabel.value = `${household.name} cabinet QR`;
         guestLabel.required = true;
         const guestName = document.createElement("label");
+        guestName.className = "schedule-option";
         const guestNameCheck = document.createElement("input");
         guestNameCheck.type = "checkbox";
         guestNameCheck.checked = true;
         guestName.append(guestNameCheck, document.createTextNode(" Ask guests for their name"));
         const createGuest = button("Create guest QR/link", "secondary compact");
+        createGuest.type = "submit";
         const guestResult = document.createElement("p");
         guestResult.className = "medicine-note";
         guestForm.append(guestLabel, guestName, createGuest, guestResult);
