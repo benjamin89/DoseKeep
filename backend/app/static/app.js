@@ -41,6 +41,12 @@ let scanControls;
 let savedScanProductId = null;
 let currentRaw;
 
+// The API stores naive datetimes as UTC. Tell the browser that explicitly;
+// otherwise a timestamp such as 20:00 UTC is interpreted as 20:00 local.
+function utcDate(value) {
+  return new Date(/[zZ]$|[+-]\d{2}:\d{2}$/.test(value) ? value : `${value}Z`);
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const payload = await response.json();
@@ -180,7 +186,7 @@ async function loadAdministration() {
         item.className = "due-dose";
         const description = document.createElement("p");
         const details = [dose.dosage, dose.route].filter(Boolean).join(" · ");
-        const dueAt = new Date(dose.due_at);
+        const dueAt = utcDate(dose.due_at);
         const millisecondsUntilDue = dueAt.getTime() - Date.now();
         const future = millisecondsUntilDue > 0;
         const canRecordEarly = dose.status === "due" && future && millisecondsUntilDue <= 60 * 60 * 1000;
@@ -189,11 +195,11 @@ async function loadAdministration() {
         if (future && dose.status === "due") doseState = canRecordEarly ? "ready to record" : "";
         if (future && dose.status === "snoozed") doseState = `snoozed until ${dueTime}`;
         if (dose.status === "taken" && dose.actioned_at) {
-          const takenAt = new Date(dose.actioned_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          const takenAt = utcDate(dose.actioned_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
           doseState = `taken at ${takenAt}`;
         }
         if (dose.status === "skipped" && dose.actioned_at) {
-          const skippedAt = new Date(dose.actioned_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          const skippedAt = utcDate(dose.actioned_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
           doseState = `skipped at ${skippedAt}`;
         }
         description.textContent = `${dose.medicine_name}${details ? ` — ${details}` : ""}${doseState ? ` · ${doseState}` : ""}`;
@@ -259,7 +265,7 @@ async function loadAdministration() {
       if (recorded.length) {
         const history = document.createElement("p");
         history.className = "medicine-note";
-        history.textContent = `Recorded today: ${recorded.map(dose => `${dose.medicine_name} at ${new Date(dose.actioned_at || dose.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`).join("; ")}.`;
+        history.textContent = `Recorded today: ${recorded.map(dose => `${dose.medicine_name} at ${utcDate(dose.actioned_at || dose.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`).join("; ")}.`;
         section.append(history);
       }
       administrationContainer.append(section);
@@ -580,7 +586,7 @@ function formatEvent(event) {
     disposed: "Disposed",
     correction: "Physical count corrected",
   };
-  const when = new Date(event.occurred_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+  const when = utcDate(event.occurred_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
   return `${labels[event.event_type] || event.event_type} ×${event.quantity} · ${when}`;
 }
 

@@ -717,6 +717,25 @@ def update_medication_schedule(
     schedule.regular_times = json.dumps(sorted(set(payload.regular_times)))
     schedule.as_required = payload.as_required
     schedule.prn_notes = payload.prn_notes.strip() if payload.prn_notes else None
+    # Retire today’s still-pending doses for slots removed from this plan.
+    # Without this, moving a medicine from bedtime to evening leaves both
+    # records visible until the next day.
+    zone = user_zone(user)
+    today = datetime.now(timezone.utc).astimezone(zone).date()
+    day_start = datetime.combine(today, time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+    day_end = day_start + timedelta(days=1)
+    active_slots = set(payload.regular_times)
+    stale_doses = session.query(ScheduledDose).filter(
+        ScheduledDose.user_id == user.id,
+        ScheduledDose.product_id.in_(related_product_ids),
+        ScheduledDose.scheduled_for >= day_start,
+        ScheduledDose.scheduled_for < day_end,
+        ScheduledDose.administration_time.in_(list(DEFAULT_SLOT_TIMES)),
+        ScheduledDose.status.in_(("due", "snoozed")),
+    )
+    if active_slots:
+        stale_doses = stale_doses.filter(~ScheduledDose.administration_time.in_(active_slots))
+    stale_doses.delete(synchronize_session=False)
     session.commit()
     return next(item for item in list_medicine_dashboard(user, session) if item["product_id"] == product_id)
 
