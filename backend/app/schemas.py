@@ -29,6 +29,7 @@ class UserRegister(BaseModel):
 class UserRead(BaseModel):
     id: int
     email: str
+    is_admin: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -108,8 +109,14 @@ class SupplyEventRead(SupplyEventCreate):
     id: int
     pack_id: int
     occurred_at: datetime
+    actor_name: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class CabinetGuestLinkCreate(BaseModel):
+    label: str = Field(default="Cabinet QR code", min_length=1, max_length=120)
+    require_name: bool = True
 
 
 class StockCorrection(BaseModel):

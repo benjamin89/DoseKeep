@@ -14,6 +14,8 @@ DoseKeep is a self-hosted companion for tracking medicines, supplements and othe
 - supports pack-to-dosette allocation and taken/disposed supply events through the REST API;
 - serves a mobile-friendly installable web app;
 - provides separate DoseKeep accounts, so each person sees only their own packs;
+- supports household shared cabinets, including revocable QR guest links that log the named user of an item;
+- gives the first registered account a protected instance-admin overview;
 - can send per-account medication reminders through a private ntfy topic;
 - estimates a regular medicine's run-out date from recorded stock and its daily plan, and flags recorded zero stock;
 - lets each account optionally connect its own MediKeep host and credentials;
@@ -53,6 +55,13 @@ without signing in; use a private ntfy topic because anyone who receives the
 notification can use that link before it expires. No ntfy credentials are
 stored by this initial integration; use a private topic or a server that
 permits topic-only publishing.
+
+### Shared cabinet guests
+
+Household admins can create a QR/link from **Household**. A guest scans it,
+signs in if they already have an account or enters a name, then records an item
+used from that cabinet. The link is revocable and is restricted to that one
+cabinet; guest activity is recorded with the supplied name, item and time.
 
 ### Phone camera access
 

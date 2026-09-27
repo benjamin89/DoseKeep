@@ -31,10 +31,13 @@ const householdsContainer = document.querySelector("#households");
 const householdResult = document.querySelector("#household-result");
 const deviceTokenResult = document.querySelector("#device-token-result");
 const deviceTokensContainer = document.querySelector("#device-tokens");
+const adminNav = document.querySelector("#admin-nav");
+const adminOverview = document.querySelector("#admin-overview");
 const pages = {
   medicines: document.querySelector("#page-medicines"),
   administration: document.querySelector("#page-administration"),
   household: document.querySelector("#page-household"),
+  admin: document.querySelector("#page-admin"),
   settings: document.querySelector("#page-settings"),
 };
 let scanControls;
@@ -66,6 +69,7 @@ function showPage(name) {
   });
   if (name === "administration") loadAdministration();
   if (name === "household") loadHouseholds();
+  if (name === "admin") loadAdminOverview();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -74,9 +78,29 @@ async function showSignedIn(status) {
   appContent.hidden = false;
   document.querySelector("#welcome").textContent = `Signed in as ${status.user.email}. Scan a pack, check its expiry, then keep your stock up to date.`;
   document.querySelector("#account-settings").textContent = `Signed in as ${status.user.email}. Your packs and any MediKeep connection are private to this DoseKeep account.`;
+  adminNav.hidden = !status.user.is_admin;
   showPage("administration");
   await Promise.all([loadMedicines(), loadPacks(), loadMediKeep(), loadAdministrationTimes(), loadNotificationSettings(), loadDeviceTokens()]);
   await loadMediKeepConnection(status.medikeep_connected);
+}
+
+async function loadAdminOverview() {
+  adminOverview.textContent = "Loading admin overview…";
+  try {
+    const overview = await api("/api/v1/admin/overview");
+    adminOverview.replaceChildren();
+    const counts = document.createElement("p");
+    counts.textContent = `${overview.counts.users} user${overview.counts.users === 1 ? "" : "s"} · ${overview.counts.households} household${overview.counts.households === 1 ? "" : "s"} · ${overview.counts.active_packs} active pack${overview.counts.active_packs === 1 ? "" : "s"} · ${overview.counts.active_guest_links} active guest link${overview.counts.active_guest_links === 1 ? "" : "s"}`;
+    adminOverview.append(counts);
+    overview.users.forEach(user => {
+      const row = document.createElement("p");
+      row.className = "medicine-note";
+      row.textContent = `${user.email}${user.is_admin ? " · system admin" : ""} · ${user.households} household${user.households === 1 ? "" : "s"}`;
+      adminOverview.append(row);
+    });
+  } catch (error) {
+    adminOverview.textContent = error.message;
+  }
 }
 
 async function loadHouseholds() {
@@ -113,6 +137,61 @@ async function loadHouseholds() {
           catch (error) { alert(error.message); }
         });
         card.append(invite);
+        const guestForm = document.createElement("form");
+        const guestLabel = document.createElement("input");
+        guestLabel.maxLength = 120;
+        guestLabel.value = `${household.name} cabinet QR`;
+        guestLabel.required = true;
+        const guestName = document.createElement("label");
+        const guestNameCheck = document.createElement("input");
+        guestNameCheck.type = "checkbox";
+        guestNameCheck.checked = true;
+        guestName.append(guestNameCheck, document.createTextNode(" Ask guests for their name"));
+        const createGuest = button("Create guest QR/link", "secondary compact");
+        const guestResult = document.createElement("p");
+        guestResult.className = "medicine-note";
+        guestForm.append(guestLabel, guestName, createGuest, guestResult);
+        guestForm.addEventListener("submit", async event => {
+          event.preventDefault();
+          try {
+            const link = await api(`/api/v1/households/${household.id}/guest-links`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: guestLabel.value.trim(), require_name: guestNameCheck.checked }) });
+            guestResult.replaceChildren();
+            guestResult.append("New guest link: ");
+            const anchor = document.createElement("a");
+            anchor.href = link.url;
+            anchor.textContent = link.url;
+            anchor.target = "_blank";
+            guestResult.append(anchor);
+            const qr = document.createElement("img");
+            qr.src = link.qr_data_url;
+            qr.alt = `QR code for ${link.label}`;
+            qr.width = 220;
+            qr.height = 220;
+            qr.style.display = "block";
+            qr.style.marginTop = ".75rem";
+            guestResult.append(qr);
+            await loadGuestLinks();
+          } catch (error) { guestResult.textContent = error.message; }
+        });
+        card.append(guestForm);
+        const guestLinks = document.createElement("div");
+        async function loadGuestLinks() {
+          try {
+            const links = await api(`/api/v1/households/${household.id}/guest-links`);
+            guestLinks.replaceChildren();
+            links.filter(link => !link.revoked_at).forEach(link => {
+              const row = document.createElement("p");
+              row.className = "medicine-note";
+              row.textContent = `${link.label} · ${link.require_name ? "name required" : "anonymous allowed"} `;
+              const revoke = button("Revoke", "secondary compact");
+              revoke.addEventListener("click", async () => { await api(`/api/v1/households/${household.id}/guest-links/${link.id}`, { method: "DELETE" }); await loadGuestLinks(); });
+              row.append(revoke);
+              guestLinks.append(row);
+            });
+          } catch { guestLinks.textContent = "Could not load guest links."; }
+        }
+        card.append(guestLinks);
+        loadGuestLinks();
       }
       householdsContainer.append(card);
     });
@@ -591,7 +670,7 @@ function formatEvent(event) {
     correction: "Physical count corrected",
   };
   const when = utcDate(event.occurred_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-  return `${labels[event.event_type] || event.event_type} ×${event.quantity} · ${when}`;
+  return `${labels[event.event_type] || event.event_type} ×${event.quantity} · ${when}${event.actor_name ? ` · ${event.actor_name}` : ""}`;
 }
 
 async function loadEvents(packId, list) {
@@ -761,6 +840,7 @@ document.querySelector("#refresh-packs").addEventListener("click", loadPacks);
 document.querySelector("#refresh-medicines").addEventListener("click", loadMedicines);
 document.querySelector("#refresh-administration").addEventListener("click", loadAdministration);
 document.querySelector("#refresh-households").addEventListener("click", loadHouseholds);
+document.querySelector("#refresh-admin").addEventListener("click", loadAdminOverview);
 document.querySelector("#refresh-medikeep").addEventListener("click", loadMediKeep);
 document.querySelectorAll("[data-page-target]").forEach(button => {
   button.addEventListener("click", () => showPage(button.dataset.pageTarget));
@@ -973,4 +1053,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.19.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.27.0");

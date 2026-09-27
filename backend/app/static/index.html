@@ -35,6 +35,7 @@
         <button type="button" data-page-target="medicines">Medicines</button>
         <button type="button" data-page-target="administration" class="current">Medication administration record</button>
         <button type="button" data-page-target="household">Household</button>
+        <button id="admin-nav" type="button" data-page-target="admin" hidden>System admin</button>
         <button type="button" data-page-target="settings">Settings</button>
       </nav>
       <div id="page-medicines" class="app-page">
@@ -126,6 +127,10 @@
         <div id="households" aria-live="polite">Loading households…</div>
         <form id="create-household-form"><label for="household-name">New household name</label><input id="household-name" maxlength="120" placeholder="Home medicine cabinet" required /><button type="submit">Create household</button><p id="household-result" aria-live="polite"></p></form>
       </section>
+      <section id="page-admin" class="app-page" hidden>
+        <div class="section-heading"><div><h2>System admin</h2><p>Instance-level account and cabinet overview. Clinical details are intentionally excluded.</p></div><button id="refresh-admin" type="button" class="secondary compact">Refresh</button></div>
+        <div id="admin-overview" aria-live="polite">Loading admin overview…</div>
+      </section>
       <section id="page-settings" class="app-page" hidden>
         <h2>Settings</h2>
         <p id="account-settings"></p>
@@ -194,6 +199,6 @@
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.26.0"></script>
+    <script src="/app.js?v=0.27.0"></script>
   </body>
 </html>

@@ -43,6 +43,13 @@ def ensure_schema() -> None:
             connection.execute(text("ALTER TABLE users ADD COLUMN administration_times TEXT NOT NULL DEFAULT '{}'"))
         if "notification_settings" not in user_columns:
             connection.execute(text("ALTER TABLE users ADD COLUMN notification_settings TEXT NOT NULL DEFAULT '{}'"))
+        if "is_admin" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"))
+        if not connection.execute(text("SELECT 1 FROM users WHERE is_admin = 1 LIMIT 1")).first():
+            connection.execute(text("UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)"))
         dose_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(scheduled_doses)"))}
         if dose_columns and "notified_at" not in dose_columns:
             connection.execute(text("ALTER TABLE scheduled_doses ADD COLUMN notified_at DATETIME"))
+        event_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(supply_events)"))}
+        if event_columns and "actor_name" not in event_columns:
+            connection.execute(text("ALTER TABLE supply_events ADD COLUMN actor_name TEXT"))

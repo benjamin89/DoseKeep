@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import html
 import hashlib
 import json
@@ -8,6 +9,7 @@ from contextlib import asynccontextmanager
 from math import ceil
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from io import BytesIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -17,13 +19,14 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
+import qrcode
 
 from .auth import current_user, decrypt_config, encrypt_config, hash_password, master_key, verify_password
 from .catalogue import lookup_french_gtin
 from .database import Base, SessionLocal, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
 from .medikeep import MediKeepUnavailable, active_medications, all_medications, create_medication, normalize_name, suggested_medications
-from .models import DeviceToken, Household, HouseholdMembership, MediKeepConnection, MediKeepLink, MedicationSchedule, NotificationActionLink, Pack, Product, ProductCommonName, ScheduledDose, SupplyEvent, User
+from .models import CabinetGuestLink, DeviceToken, Household, HouseholdMembership, MediKeepConnection, MediKeepLink, MedicationSchedule, NotificationActionLink, Pack, Product, ProductCommonName, ScheduledDose, SupplyEvent, User
 from .notifications import send_ntfy
 from .schemas import (
     AdministrationTimeSettings,
@@ -33,6 +36,7 @@ from .schemas import (
     DeviceTokenCreated,
     DeviceTokenRead,
     AuthStatus,
+    CabinetGuestLinkCreate,
     DecodedCode,
     MediKeepImportRead,
     HouseholdCreate,
@@ -117,7 +121,7 @@ def register_account(payload: UserRegister, request: Request, session: Session =
     if session.query(User).filter_by(email=email).first():
         raise HTTPException(status_code=409, detail="An account with that email already exists")
     first_account = session.query(User).count() == 0
-    user = User(email=email, password_hash=hash_password(payload.password))
+    user = User(email=email, password_hash=hash_password(payload.password), is_admin=first_account)
     session.add(user)
     session.flush()
     # The first account on an existing single-user install owns legacy packs.
@@ -176,6 +180,42 @@ def can_change_pack(user: User, pack: Pack, session: Session) -> bool:
     if pack.user_id == user.id:
         return True
     return bool(pack.household_id and (role := household_role(user, pack.household_id, session)) and HOUSEHOLD_ROLES.get(role, -1) >= HOUSEHOLD_ROLES["contributor"])
+
+
+def require_system_admin(user: User) -> None:
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="System administrator access is required")
+
+
+def cabinet_guest_link(token: str, session: Session) -> CabinetGuestLink:
+    record = session.query(CabinetGuestLink).filter_by(token_hash=hashlib.sha256(token.encode()).hexdigest()).first()
+    if not record or record.revoked_at:
+        raise HTTPException(status_code=404, detail="This cabinet link is no longer available")
+    return record
+
+
+@app.get("/api/v1/admin/overview")
+def system_admin_overview(user: User = Depends(current_user), session: Session = Depends(get_session)):
+    """Minimal operational overview; it deliberately excludes health details."""
+    require_system_admin(user)
+    users = session.query(User).order_by(User.created_at).all()
+    return {
+        "counts": {
+            "users": len(users),
+            "households": session.query(Household).count(),
+            "active_packs": session.query(Pack).filter_by(status="active").count(),
+            "active_guest_links": session.query(CabinetGuestLink).filter(CabinetGuestLink.revoked_at.is_(None)).count(),
+        },
+        "users": [
+            {
+                "email": item.email,
+                "is_admin": item.is_admin,
+                "households": session.query(HouseholdMembership).filter_by(user_id=item.id).count(),
+                "created_at": item.created_at,
+            }
+            for item in users
+        ],
+    }
 
 
 def administration_times(user: User) -> dict[str, str]:
@@ -661,6 +701,126 @@ def add_household_member(
     session.commit()
     household = session.get(Household, household_id)
     return {"id": household.id, "name": household.name, "role": household_role(user, household_id, session), "member_count": session.query(HouseholdMembership).filter_by(household_id=household_id).count()}
+
+
+@app.get("/api/v1/households/{household_id}/guest-links")
+def list_cabinet_guest_links(household_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    require_household_role(user, household_id, "admin", session)
+    return [
+        {"id": item.id, "label": item.label, "require_name": item.require_name, "revoked_at": item.revoked_at, "created_at": item.created_at}
+        for item in session.query(CabinetGuestLink).filter_by(household_id=household_id).order_by(CabinetGuestLink.created_at.desc()).all()
+    ]
+
+
+@app.post("/api/v1/households/{household_id}/guest-links", status_code=201)
+def create_cabinet_guest_link(
+    household_id: int,
+    payload: CabinetGuestLinkCreate,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    require_household_role(user, household_id, "admin", session)
+    token = secrets.token_urlsafe(32)
+    record = CabinetGuestLink(
+        household_id=household_id,
+        label=payload.label.strip(),
+        require_name=payload.require_name,
+        token_hash=hashlib.sha256(token.encode()).hexdigest(),
+    )
+    session.add(record)
+    session.commit()
+    url = f"{os.getenv('DOSEKEEP_PUBLIC_URL', 'https://dosekeep.godsil.co.uk').rstrip('/')}/cabinet/{token}"
+    image = qrcode.make(url)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return {
+        "id": record.id,
+        "label": record.label,
+        "require_name": record.require_name,
+        "url": url,
+        "qr_data_url": f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}",
+    }
+
+
+@app.delete("/api/v1/households/{household_id}/guest-links/{link_id}")
+def revoke_cabinet_guest_link(household_id: int, link_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    require_household_role(user, household_id, "admin", session)
+    record = session.query(CabinetGuestLink).filter_by(id=link_id, household_id=household_id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Guest link not found")
+    record.revoked_at = datetime.utcnow()
+    session.commit()
+    return {"ok": True}
+
+
+def cabinet_actor_name(request: Request, link: CabinetGuestLink, session: Session) -> str | None:
+    user_id = request.session.get("user_id")
+    if user := session.get(User, user_id):
+        return user.email
+    return request.session.get(f"cabinet_guest_{link.id}")
+
+
+@app.get("/cabinet/{token}", response_class=HTMLResponse)
+def cabinet_guest_page(token: str, request: Request, session: Session = Depends(get_session)):
+    link = cabinet_guest_link(token, session)
+    household = session.get(Household, link.household_id)
+    actor = cabinet_actor_name(request, link, session)
+    packs = session.query(Pack).filter_by(household_id=link.household_id, status="active").filter(Pack.quantity_remaining > 0).all()
+    totals: dict[int, int] = {}
+    for pack in packs:
+        totals[pack.product_id] = totals.get(pack.product_id, 0) + pack.quantity_remaining
+    items = []
+    for product_id, quantity in totals.items():
+        product = session.get(Product, product_id)
+        name = html.escape(product.name if product else "Medicine")
+        action = f'<button data-product-id="{product_id}">Record one used</button>' if actor else ""
+        items.append(f"<section><h2>{name}</h2><p>{quantity} item{'s' if quantity != 1 else ''} available</p>{action}</section>")
+    content = "".join(items) or "<p>No cabinet stock is currently recorded.</p>"
+    required = "required" if link.require_name else ""
+    identity = (
+        f"<p>Recording as <strong>{html.escape(actor)}</strong>.</p>"
+        if actor
+        else f'''<form id="guest-form"><label for="guest-name">Your name{' (required)' if link.require_name else ' (optional)'}</label><input id="guest-name" maxlength="120" {required} placeholder="Name for the cabinet record" /><button>Continue as guest</button></form><p>Already registered? <a href="/">Sign in to DoseKeep</a>, then return to this QR link.</p>'''
+    )
+    return HTMLResponse(
+        f'''<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(household.name)} cabinet</title>
+<style>body{{font-family:system-ui,sans-serif;background:#f7f8f4;color:#173222;margin:0;padding:1.25rem;max-width:38rem}}section,form{{background:#fff;padding:1.1rem;margin:1rem 0;border-radius:1rem;box-shadow:0 1px 3px #0002}}h1,h2{{margin:.1rem 0 .5rem}}p{{color:#475569}}input,button{{width:100%;box-sizing:border-box;margin-top:.6rem;padding:.8rem;border-radius:.55rem;font:inherit}}input{{border:1px solid #9ca3af}}button{{border:0;background:#166534;color:white;font-weight:700}}#result{{font-weight:700}}</style>
+<h1>{html.escape(household.name)} cabinet</h1><p>Shared cabinet access</p>{identity}<div id="items">{content}</div><p id="result"></p>
+<script>const result=document.querySelector('#result');const guest=document.querySelector('#guest-form');if(guest)guest.addEventListener('submit',async event=>{{event.preventDefault();const response=await fetch(location.pathname+'/guest',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name:document.querySelector('#guest-name').value}})}});if(response.ok)location.reload();else result.textContent=(await response.json()).detail||'Could not continue';}});document.querySelectorAll('[data-product-id]').forEach(button=>button.addEventListener('click',async()=>{{button.disabled=true;const response=await fetch(location.pathname+'/record',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{product_id:Number(button.dataset.productId)}})}});const data=await response.json();if(response.ok){{result.textContent=`Recorded: ${{data.product_name}}.`;location.reload();}}else{{result.textContent=data.detail||'Could not record use';button.disabled=false;}}}}));</script></html>'''
+    )
+
+
+@app.post("/cabinet/{token}/guest")
+async def identify_cabinet_guest(token: str, request: Request, session: Session = Depends(get_session)):
+    link = cabinet_guest_link(token, session)
+    try:
+        name = str((await request.json()).get("name", "")).strip()
+    except Exception:
+        name = ""
+    if link.require_name and not name:
+        raise HTTPException(status_code=422, detail="Enter your name to use this cabinet")
+    request.session[f"cabinet_guest_{link.id}"] = name or "Guest"
+    return {"ok": True}
+
+
+@app.post("/cabinet/{token}/record")
+async def record_cabinet_guest_use(token: str, request: Request, session: Session = Depends(get_session)):
+    link = cabinet_guest_link(token, session)
+    actor = cabinet_actor_name(request, link, session)
+    if not actor:
+        raise HTTPException(status_code=403, detail="Choose guest access or sign in first")
+    try:
+        product_id = int((await request.json()).get("product_id"))
+    except Exception:
+        raise HTTPException(status_code=422, detail="Choose a cabinet item")
+    pack = session.query(Pack).filter_by(household_id=link.household_id, product_id=product_id, status="active").filter(Pack.quantity_remaining > 0).order_by(Pack.expiry_date.is_(None), Pack.expiry_date, Pack.id).first()
+    if not pack:
+        raise HTTPException(status_code=409, detail="That item is no longer available")
+    pack.quantity_remaining -= 1
+    session.add(SupplyEvent(pack_id=pack.id, event_type="taken_from_pack", quantity=1, notes="Shared cabinet use", actor_name=actor))
+    session.commit()
+    product = session.get(Product, product_id)
+    return {"ok": True, "product_name": product.name if product else "Item"}
 
 
 @app.put("/api/v1/packs/{pack_id}/household", response_model=PackRead)

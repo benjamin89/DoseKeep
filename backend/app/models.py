@@ -41,6 +41,7 @@ class User(Base):
     administration_times: Mapped[str] = mapped_column(Text, default="{}")
     # Kept per account: a topic can be private even on a shared ntfy server.
     notification_settings: Mapped[str] = mapped_column(Text, default="{}")
+    is_admin: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     packs: Mapped[list["Pack"]] = relationship(back_populates="user")
@@ -94,6 +95,20 @@ class NotificationActionLink(Base):
     dose_ids: Mapped[str] = mapped_column(Text)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CabinetGuestLink(Base):
+    """Revocable QR/link access to one household cabinet, without an account."""
+
+    __tablename__ = "cabinet_guest_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    household_id: Mapped[int] = mapped_column(ForeignKey("households.id"), index=True)
+    label: Mapped[str] = mapped_column(String(120))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    require_name: Mapped[bool] = mapped_column(default=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -209,5 +224,6 @@ class SupplyEvent(Base):
     quantity: Mapped[int] = mapped_column(Integer)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
     pack: Mapped[Pack] = relationship(back_populates="events")
