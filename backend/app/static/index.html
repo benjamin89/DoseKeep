@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#14532d" />
-    <link rel="manifest" href="/manifest.webmanifest?v=0.23.0" />
-    <link rel="stylesheet" href="/styles.css?v=0.23.0" />
+    <link rel="manifest" href="/manifest.webmanifest?v=0.24.0" />
+    <link rel="stylesheet" href="/styles.css?v=0.24.0" />
     <title>DoseKeep</title>
   </head>
   <body>
@@ -34,6 +34,7 @@
       <nav class="page-nav" aria-label="DoseKeep pages">
         <button type="button" data-page-target="medicines">Medicines</button>
         <button type="button" data-page-target="administration" class="current">Medication administration record</button>
+        <button type="button" data-page-target="household">Household</button>
         <button type="button" data-page-target="settings">Settings</button>
       </nav>
       <div id="page-medicines" class="app-page">
@@ -120,6 +121,11 @@
         </div>
         <div id="administration" aria-live="polite">Loading administration plan…</div>
       </section>
+      <section id="page-household" class="app-page" hidden>
+        <div class="section-heading"><div><h2>Household & shared cabinet</h2><p>Shared packs are visible to household members; medication plans and MARs stay private.</p></div><button id="refresh-households" type="button" class="secondary compact">Refresh</button></div>
+        <div id="households" aria-live="polite">Loading households…</div>
+        <form id="create-household-form"><label for="household-name">New household name</label><input id="household-name" maxlength="120" placeholder="Home medicine cabinet" required /><button type="submit">Create household</button><p id="household-result" aria-live="polite"></p></form>
+      </section>
       <section id="page-settings" class="app-page" hidden>
         <h2>Settings</h2>
         <p id="account-settings"></p>
@@ -138,6 +144,12 @@
             <button type="submit">Save administration times</button>
             <p id="administration-times-result" aria-live="polite"></p>
           </form>
+        </section>
+        <section>
+          <h2>Physical button / Home Assistant</h2>
+          <p>Create a revocable, medication-and-time-scoped token for a physical button or Home Assistant REST command.</p>
+          <form id="device-token-form"><label for="device-label">Button name</label><input id="device-label" maxlength="120" placeholder="Bedside button" required /><label for="device-product">Medicine</label><select id="device-product" required></select><label for="device-slot">Administration time</label><select id="device-slot"><option value="morning">Morning</option><option value="midday">Midday</option><option value="evening">Evening</option><option value="bedtime">Bedtime</option></select><button type="submit">Create device token</button><p id="device-token-result" aria-live="polite"></p></form>
+          <div id="device-tokens"></div>
         </section>
         <section>
           <h2>Medication reminders <span class="optional">ntfy</span></h2>
@@ -182,6 +194,6 @@
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.23.0"></script>
+    <script src="/app.js?v=0.24.0"></script>
   </body>
 </html>

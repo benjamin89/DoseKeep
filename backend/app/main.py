@@ -1,12 +1,14 @@
 import asyncio
+import hashlib
 import json
+import secrets
 from contextlib import asynccontextmanager
 from math import ceil
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import or_
@@ -18,15 +20,21 @@ from .catalogue import lookup_french_gtin
 from .database import Base, SessionLocal, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
 from .medikeep import MediKeepUnavailable, active_medications, all_medications, create_medication, normalize_name, suggested_medications
-from .models import MediKeepConnection, MediKeepLink, MedicationSchedule, Pack, Product, ProductCommonName, ScheduledDose, SupplyEvent, User
+from .models import DeviceToken, Household, HouseholdMembership, MediKeepConnection, MediKeepLink, MedicationSchedule, Pack, Product, ProductCommonName, ScheduledDose, SupplyEvent, User
 from .notifications import send_ntfy
 from .schemas import (
     AdministrationTimeSettings,
     CatalogueProductRead,
     CommonNameUpdate,
+    DeviceTokenCreate,
+    DeviceTokenCreated,
+    DeviceTokenRead,
     AuthStatus,
     DecodedCode,
     MediKeepImportRead,
+    HouseholdCreate,
+    HouseholdMemberCreate,
+    HouseholdRead,
     MediKeepConnectionCreate,
     MediKeepConnectionRead,
     MediKeepMedicationRead,
@@ -36,6 +44,7 @@ from .schemas import (
     ScheduledDoseAction,
     ScheduledDoseRead,
     PackCreate,
+    PackHouseholdUpdate,
     PackRead,
     ProductCreate,
     ProductRead,
@@ -137,6 +146,33 @@ def logout_account(request: Request):
 
 DEFAULT_SLOT_TIMES = {"morning": "08:00", "midday": "12:00", "evening": "19:00", "bedtime": "22:00"}
 DEFAULT_NOTIFICATION_SETTINGS = {"enabled": False, "server_url": "https://ntfy.sh", "topic": None}
+HOUSEHOLD_ROLES = {"viewer": 0, "contributor": 1, "admin": 2}
+
+
+def household_role(user: User, household_id: int, session: Session) -> str | None:
+    membership = session.query(HouseholdMembership).filter_by(household_id=household_id, user_id=user.id).first()
+    return membership.role if membership else None
+
+
+def require_household_role(user: User, household_id: int, minimum: str, session: Session) -> None:
+    role = household_role(user, household_id, session)
+    if not role or HOUSEHOLD_ROLES.get(role, -1) < HOUSEHOLD_ROLES[minimum]:
+        raise HTTPException(status_code=403, detail=f"{minimum.title()} access is required for this household")
+
+
+def accessible_household_ids(user: User, session: Session) -> list[int]:
+    return [item.household_id for item in session.query(HouseholdMembership).filter_by(user_id=user.id).all()]
+
+
+def accessible_pack_filter(user: User, session: Session):
+    household_ids = accessible_household_ids(user, session)
+    return or_(Pack.user_id == user.id, Pack.household_id.in_(household_ids) if household_ids else False)
+
+
+def can_change_pack(user: User, pack: Pack, session: Session) -> bool:
+    if pack.user_id == user.id:
+        return True
+    return bool(pack.household_id and (role := household_role(user, pack.household_id, session)) and HOUSEHOLD_ROLES.get(role, -1) >= HOUSEHOLD_ROLES["contributor"])
 
 
 def administration_times(user: User) -> dict[str, str]:
@@ -438,11 +474,12 @@ def create_and_link_medikeep_medication(product_id: int, user: User = Depends(cu
 
 @app.get("/api/v1/products", response_model=list[ProductRead])
 def list_products(user: User = Depends(current_user), session: Session = Depends(get_session)):
+    household_ids = accessible_household_ids(user, session)
     return (
         session.query(Product)
         .outerjoin(Pack, Pack.product_id == Product.id)
         .outerjoin(MediKeepLink, MediKeepLink.product_id == Product.id)
-        .filter(or_(Pack.user_id == user.id, MediKeepLink.user_id == user.id))
+        .filter(or_(Pack.user_id == user.id, Pack.household_id.in_(household_ids) if household_ids else False, MediKeepLink.user_id == user.id))
         .distinct()
         .order_by(Product.name)
         .all()
@@ -452,7 +489,7 @@ def list_products(user: User = Depends(current_user), session: Session = Depends
 @app.get("/api/v1/dashboard/medicines", response_model=list[MedicineOverviewRead])
 def list_medicine_dashboard(user: User = Depends(current_user), session: Session = Depends(get_session)):
     """Default user view: medicines first, with packs as supporting detail."""
-    packs = session.query(Pack).filter_by(user_id=user.id, status="active").all()
+    packs = session.query(Pack).filter(accessible_pack_filter(user, session), Pack.status == "active").all()
     product_ids = {pack.product_id for pack in packs}
     products = {item.id: item for item in session.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
     all_by_id = {}
@@ -561,7 +598,7 @@ def update_common_name(
     session: Session = Depends(get_session),
 ):
     owned = (
-        session.query(Pack).filter_by(user_id=user.id, product_id=product_id).first()
+        session.query(Pack).filter(accessible_pack_filter(user, session), Pack.product_id == product_id).first()
         or session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product_id).first()
     )
     if not owned:
@@ -576,6 +613,71 @@ def update_common_name(
     return {"common_name": common_name}
 
 
+@app.get("/api/v1/households", response_model=list[HouseholdRead])
+def list_households(user: User = Depends(current_user), session: Session = Depends(get_session)):
+    memberships = session.query(HouseholdMembership).filter_by(user_id=user.id).all()
+    result = []
+    for membership in memberships:
+        household = session.get(Household, membership.household_id)
+        if household:
+            result.append({
+                "id": household.id,
+                "name": household.name,
+                "role": membership.role,
+                "member_count": session.query(HouseholdMembership).filter_by(household_id=household.id).count(),
+            })
+    return result
+
+
+@app.post("/api/v1/households", response_model=HouseholdRead, status_code=201)
+def create_household(payload: HouseholdCreate, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    household = Household(name=payload.name.strip(), created_by_user_id=user.id)
+    session.add(household)
+    session.flush()
+    session.add(HouseholdMembership(household_id=household.id, user_id=user.id, role="admin"))
+    session.commit()
+    return {"id": household.id, "name": household.name, "role": "admin", "member_count": 1}
+
+
+@app.post("/api/v1/households/{household_id}/members", response_model=HouseholdRead)
+def add_household_member(
+    household_id: int,
+    payload: HouseholdMemberCreate,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    require_household_role(user, household_id, "admin", session)
+    member = session.query(User).filter_by(email=payload.email.strip().lower()).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="That person needs a DoseKeep account before they can be added")
+    record = session.query(HouseholdMembership).filter_by(household_id=household_id, user_id=member.id).first()
+    if record:
+        record.role = payload.role
+    else:
+        session.add(HouseholdMembership(household_id=household_id, user_id=member.id, role=payload.role))
+    session.commit()
+    household = session.get(Household, household_id)
+    return {"id": household.id, "name": household.name, "role": household_role(user, household_id, session), "member_count": session.query(HouseholdMembership).filter_by(household_id=household_id).count()}
+
+
+@app.put("/api/v1/packs/{pack_id}/household", response_model=PackRead)
+def set_pack_household(
+    pack_id: int,
+    payload: PackHouseholdUpdate,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    pack = session.query(Pack).filter(Pack.id == pack_id, accessible_pack_filter(user, session)).first()
+    if not pack or not can_change_pack(user, pack, session):
+        raise HTTPException(status_code=404, detail="Pack not found")
+    if payload.household_id:
+        require_household_role(user, payload.household_id, "contributor", session)
+    pack.household_id = payload.household_id
+    session.commit()
+    session.refresh(pack)
+    return pack
+
+
 @app.put("/api/v1/products/{product_id}/schedule", response_model=MedicineOverviewRead)
 def update_medication_schedule(
     product_id: int,
@@ -587,7 +689,7 @@ def update_medication_schedule(
         payload.validate_schedule()
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    owns_product = session.query(Pack).filter_by(user_id=user.id, product_id=product_id).first()
+    owns_product = session.query(Pack).filter(accessible_pack_filter(user, session), Pack.product_id == product_id).first()
     linked_product = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product_id).first()
     if not owns_product and not linked_product:
         raise HTTPException(status_code=404, detail="Medicine not found")
@@ -723,7 +825,7 @@ def dose_read(dose: ScheduledDose, session: Session, display_names: dict[int, st
     product = session.get(Product, dose.product_id)
     stock = sum(
         pack.quantity_remaining + pack.quantity_in_dosette
-        for pack in session.query(Pack).filter_by(user_id=dose.user_id, product_id=dose.product_id, status="active").all()
+        for pack in session.query(Pack).filter(accessible_pack_filter(dose.user, session), Pack.product_id == dose.product_id, Pack.status == "active").all()
     )
     return {
         "id": dose.id,
@@ -780,7 +882,7 @@ def process_due_notifications(session: Session) -> None:
                 medicine = display_names.get(dose.product_id) or (product.name if product else "your medicine")
                 stock = sum(
                     pack.quantity_remaining + pack.quantity_in_dosette
-                    for pack in session.query(Pack).filter_by(user_id=user.id, product_id=dose.product_id, status="active").all()
+                    for pack in session.query(Pack).filter(accessible_pack_filter(user, session), Pack.product_id == dose.product_id, Pack.status == "active").all()
                 )
                 if stock <= 0:
                     details.append(f"{medicine} (no stock recorded)")
@@ -839,10 +941,21 @@ def oldest_stock_pack(user: User, product_id: int, session: Session) -> Pack | N
     product_ids = related_product_ids(user, product_id, session)
     return (
         session.query(Pack)
-        .filter(Pack.user_id == user.id, Pack.product_id.in_(product_ids), Pack.status == "active", Pack.quantity_remaining > 0)
+        .filter(accessible_pack_filter(user, session), Pack.product_id.in_(product_ids), Pack.status == "active", Pack.quantity_remaining > 0)
         .order_by(Pack.expiry_date.is_(None), Pack.expiry_date, Pack.id)
         .first()
     )
+
+
+def record_taken_dose(dose: ScheduledDose, user: User, session: Session, now: datetime, notes: str | None = None) -> None:
+    pack = oldest_stock_pack(user, dose.product_id, session)
+    if not pack:
+        raise HTTPException(status_code=409, detail="No recorded pack has stock for this medicine")
+    pack.quantity_remaining -= 1
+    session.add(SupplyEvent(pack_id=pack.id, event_type="taken_from_pack", quantity=1, notes=notes or f"Scheduled {dose.administration_time} dose"))
+    dose.status = "taken"
+    dose.actioned_at = now
+    dose.notes = notes
 
 
 @app.get("/api/v1/doses/today", response_model=list[ScheduledDoseRead])
@@ -894,17 +1007,92 @@ def action_scheduled_dose(
         dose.actioned_at = now
         dose.notes = payload.notes
     else:
-        pack = oldest_stock_pack(user, dose.product_id, session)
-        if not pack:
-            raise HTTPException(status_code=409, detail="No recorded pack has stock for this medicine")
-        pack.quantity_remaining -= 1
-        session.add(SupplyEvent(pack_id=pack.id, event_type="taken_from_pack", quantity=1, notes=f"Scheduled {dose.administration_time} dose"))
-        dose.status = "taken"
-        dose.actioned_at = now
-        dose.notes = payload.notes
+        record_taken_dose(dose, user, session, now, payload.notes)
     session.commit()
     session.refresh(dose)
     return dose_read(dose, session, medication_display_names(user, session))
+
+
+@app.get("/api/v1/devices", response_model=list[DeviceTokenRead])
+def list_device_tokens(user: User = Depends(current_user), session: Session = Depends(get_session)):
+    return session.query(DeviceToken).filter_by(user_id=user.id).order_by(DeviceToken.created_at.desc()).all()
+
+
+@app.post("/api/v1/devices", response_model=DeviceTokenCreated, status_code=201)
+def create_device_token(payload: DeviceTokenCreate, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    owned = session.query(Pack).filter(accessible_pack_filter(user, session), Pack.product_id == payload.product_id).first()
+    if not owned:
+        raise HTTPException(status_code=404, detail="Medicine not found")
+    token = f"dosekeep_{secrets.token_urlsafe(32)}"
+    record = DeviceToken(
+        user_id=user.id,
+        product_id=payload.product_id,
+        administration_time=payload.administration_time,
+        label=payload.label.strip(),
+        token_hash=hashlib.sha256(token.encode()).hexdigest(),
+    )
+    session.add(record)
+    session.commit()
+    session.refresh(record)
+    return {**DeviceTokenRead.model_validate(record).model_dump(), "token": token}
+
+
+@app.delete("/api/v1/devices/{device_id}")
+def revoke_device_token(device_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    record = session.query(DeviceToken).filter_by(id=device_id, user_id=user.id).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Device token not found")
+    record.revoked_at = datetime.utcnow()
+    session.commit()
+    return {"ok": True}
+
+
+@app.post("/api/v1/device/taken")
+def record_device_taken(authorization: str | None = Header(default=None), session: Session = Depends(get_session)):
+    """Inbound physical-button endpoint, scoped by a revocable bearer token."""
+    token = authorization.removeprefix("Bearer ").strip() if authorization else ""
+    if not token.startswith("dosekeep_"):
+        raise HTTPException(status_code=401, detail="A device bearer token is required")
+    record = session.query(DeviceToken).filter_by(token_hash=hashlib.sha256(token.encode()).hexdigest()).first()
+    if not record or record.revoked_at:
+        raise HTTPException(status_code=401, detail="Device token is invalid or revoked")
+    user = session.get(User, record.user_id)
+    zone = user_zone(user)
+    now = datetime.utcnow()
+    local_today = now.replace(tzinfo=timezone.utc).astimezone(zone).date()
+    start = datetime.combine(local_today, time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+    end = start + timedelta(days=1)
+    dose = (
+        session.query(ScheduledDose)
+        .filter(
+            ScheduledDose.user_id == user.id,
+            ScheduledDose.product_id == record.product_id,
+            ScheduledDose.administration_time == record.administration_time,
+            ScheduledDose.scheduled_for >= start,
+            ScheduledDose.scheduled_for < end,
+            ScheduledDose.status.in_(("due", "snoozed")),
+        )
+        .order_by(ScheduledDose.due_at)
+        .first()
+    )
+    if not dose:
+        already = session.query(ScheduledDose).filter(
+            ScheduledDose.user_id == user.id,
+            ScheduledDose.product_id == record.product_id,
+            ScheduledDose.administration_time == record.administration_time,
+            ScheduledDose.scheduled_for >= start,
+            ScheduledDose.scheduled_for < end,
+            ScheduledDose.status == "taken",
+        ).first()
+        if already:
+            return {"ok": True, "already_recorded": True, "dose_id": already.id}
+        raise HTTPException(status_code=409, detail="No due dose is available for this device")
+    if now < dose.due_at - timedelta(hours=1):
+        raise HTTPException(status_code=409, detail="This dose is not yet within its one-hour early recording window")
+    record_taken_dose(dose, user, session, now, f"Recorded by device: {record.label}")
+    record.last_used_at = now
+    session.commit()
+    return {"ok": True, "already_recorded": False, "dose_id": dose.id}
 
 
 @app.post("/api/v1/products/{product_id}/prn", response_model=ScheduledDoseRead, status_code=201)
@@ -949,12 +1137,12 @@ def create_product(product: ProductCreate, user: User = Depends(current_user), s
 
 @app.get("/api/v1/packs", response_model=list[PackRead])
 def list_packs(user: User = Depends(current_user), session: Session = Depends(get_session)):
-    return session.query(Pack).filter(Pack.user_id == user.id).order_by(Pack.expiry_date.is_(None), Pack.expiry_date).all()
+    return session.query(Pack).filter(accessible_pack_filter(user, session)).order_by(Pack.expiry_date.is_(None), Pack.expiry_date).all()
 
 
 @app.get("/api/v1/packs/{pack_id}/events", response_model=list[SupplyEventRead])
 def list_pack_events(pack_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
-    if not session.query(Pack).filter_by(id=pack_id, user_id=user.id).first():
+    if not session.query(Pack).filter(Pack.id == pack_id, accessible_pack_filter(user, session)).first():
         raise HTTPException(status_code=404, detail="Pack not found")
     return (
         session.query(SupplyEvent)
@@ -1038,8 +1226,8 @@ def create_pack_from_scan(scan: ScannedPackCreate, user: User = Depends(current_
 @app.post("/api/v1/packs/{pack_id}/stock", response_model=PackRead)
 def correct_pack_stock(pack_id: int, correction: StockCorrection, user: User = Depends(current_user), session: Session = Depends(get_session)):
     """Record a physical count without inventing historical dose events."""
-    pack = session.query(Pack).filter_by(id=pack_id, user_id=user.id).first()
-    if not pack:
+    pack = session.query(Pack).filter(Pack.id == pack_id, accessible_pack_filter(user, session)).first()
+    if not pack or not can_change_pack(user, pack, session):
         raise HTTPException(status_code=404, detail="Pack not found")
     previous = pack.quantity_remaining
     if previous != correction.quantity_remaining:
@@ -1059,8 +1247,8 @@ def correct_pack_stock(pack_id: int, correction: StockCorrection, user: User = D
 
 @app.post("/api/v1/packs/{pack_id}/events", response_model=SupplyEventRead, status_code=201)
 def add_supply_event(pack_id: int, event: SupplyEventCreate, user: User = Depends(current_user), session: Session = Depends(get_session)):
-    pack = session.query(Pack).filter_by(id=pack_id, user_id=user.id).first()
-    if not pack:
+    pack = session.query(Pack).filter(Pack.id == pack_id, accessible_pack_filter(user, session)).first()
+    if not pack or not can_change_pack(user, pack, session):
         raise HTTPException(status_code=404, detail="Pack not found")
     if event.event_type == "dosette_fill":
         if pack.quantity_remaining < event.quantity:

@@ -50,11 +50,46 @@ class User(Base):
     scheduled_doses: Mapped[list["ScheduledDose"]] = relationship(back_populates="user")
 
 
+class Household(Base):
+    __tablename__ = "households"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class HouseholdMembership(Base):
+    __tablename__ = "household_memberships"
+    __table_args__ = (UniqueConstraint("household_id", "user_id", name="uq_household_member"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    household_id: Mapped[int] = mapped_column(ForeignKey("households.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    role: Mapped[str] = mapped_column(String(20), default="viewer")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class DeviceToken(Base):
+    __tablename__ = "device_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
+    administration_time: Mapped[str] = mapped_column(String(20))
+    label: Mapped[str] = mapped_column(String(120))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Pack(Base):
     __tablename__ = "packs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    household_id: Mapped[int | None] = mapped_column(ForeignKey("households.id"), nullable=True, index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
     gtin: Mapped[str | None] = mapped_column(String(14), nullable=True)
     serial_number: Mapped[str | None] = mapped_column(String(80), nullable=True)

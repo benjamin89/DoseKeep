@@ -27,9 +27,14 @@ const administrationTimesResult = document.querySelector("#administration-times-
 const notificationSettingsForm = document.querySelector("#notification-settings-form");
 const notificationSettingsResult = document.querySelector("#notification-settings-result");
 const administrationContainer = document.querySelector("#administration");
+const householdsContainer = document.querySelector("#households");
+const householdResult = document.querySelector("#household-result");
+const deviceTokenResult = document.querySelector("#device-token-result");
+const deviceTokensContainer = document.querySelector("#device-tokens");
 const pages = {
   medicines: document.querySelector("#page-medicines"),
   administration: document.querySelector("#page-administration"),
+  household: document.querySelector("#page-household"),
   settings: document.querySelector("#page-settings"),
 };
 let scanControls;
@@ -54,6 +59,7 @@ function showPage(name) {
     button.classList.toggle("current", button.dataset.pageTarget === name);
   });
   if (name === "administration") loadAdministration();
+  if (name === "household") loadHouseholds();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -63,8 +69,77 @@ async function showSignedIn(status) {
   document.querySelector("#welcome").textContent = `Signed in as ${status.user.email}. Scan a pack, check its expiry, then keep your stock up to date.`;
   document.querySelector("#account-settings").textContent = `Signed in as ${status.user.email}. Your packs and any MediKeep connection are private to this DoseKeep account.`;
   showPage("administration");
-  await Promise.all([loadMedicines(), loadPacks(), loadMediKeep(), loadAdministrationTimes(), loadNotificationSettings()]);
+  await Promise.all([loadMedicines(), loadPacks(), loadMediKeep(), loadAdministrationTimes(), loadNotificationSettings(), loadDeviceTokens()]);
   await loadMediKeepConnection(status.medikeep_connected);
+}
+
+async function loadHouseholds() {
+  householdsContainer.textContent = "Loading households…";
+  try {
+    const households = await api("/api/v1/households");
+    householdsContainer.replaceChildren();
+    if (!households.length) {
+      householdsContainer.textContent = "No household yet. Create one to start a shared medicine cabinet.";
+      return;
+    }
+    households.forEach(household => {
+      const card = document.createElement("article");
+      card.className = "medicine-card";
+      const title = document.createElement("h3");
+      title.textContent = household.name;
+      const details = document.createElement("p");
+      details.className = "medicine-note";
+      details.textContent = `${household.role} · ${household.member_count} member${household.member_count === 1 ? "" : "s"}`;
+      card.append(title, details);
+      if (household.role === "admin") {
+        const invite = document.createElement("form");
+        const email = document.createElement("input");
+        email.type = "email";
+        email.placeholder = "Existing DoseKeep account email";
+        email.required = true;
+        const role = document.createElement("select");
+        ["viewer", "contributor", "admin"].forEach(value => { const option = document.createElement("option"); option.value = value; option.textContent = value; role.append(option); });
+        const add = button("Add or update member", "secondary compact");
+        invite.append(email, role, add);
+        invite.addEventListener("submit", async event => {
+          event.preventDefault();
+          try { await api(`/api/v1/households/${household.id}/members`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: email.value.trim(), role: role.value }) }); await loadHouseholds(); }
+          catch (error) { alert(error.message); }
+        });
+        card.append(invite);
+      }
+      householdsContainer.append(card);
+    });
+  } catch (error) {
+    householdsContainer.textContent = `Could not load households: ${error.message}`;
+  }
+}
+
+async function loadDeviceTokens() {
+  try {
+    const [tokens, medicines] = await Promise.all([api("/api/v1/devices"), api("/api/v1/dashboard/medicines")]);
+    const select = document.querySelector("#device-product");
+    select.replaceChildren();
+    medicines.filter(medicine => medicine.product_id).forEach(medicine => {
+      const option = document.createElement("option");
+      option.value = String(medicine.product_id);
+      option.textContent = medicine.name;
+      select.append(option);
+    });
+    deviceTokensContainer.replaceChildren();
+    tokens.filter(token => !token.revoked_at).forEach(token => {
+      const row = document.createElement("p");
+      row.className = "medicine-note";
+      const medicine = medicines.find(item => item.product_id === token.product_id);
+      row.textContent = `${token.label} — ${medicine?.name || "medicine"} (${token.administration_time})`;
+      const revoke = button("Revoke", "secondary compact");
+      revoke.addEventListener("click", async () => { await api(`/api/v1/devices/${token.id}`, { method: "DELETE" }); await loadDeviceTokens(); });
+      row.append(document.createTextNode(" "), revoke);
+      deviceTokensContainer.append(row);
+    });
+  } catch {
+    // Device settings are optional; leave them quiet until signed in.
+  }
 }
 
 async function loadAdministration() {
@@ -559,6 +634,8 @@ function renderPack(pack, productName) {
   meta.textContent = `${expiry}${pack.batch_number ? ` · Batch ${pack.batch_number}` : ""}`;
   card.append(meta);
 
+  addHouseholdPackControl(pack, card);
+
   const stock = document.createElement("p");
   stock.className = "stock-number";
   stock.textContent = `${pack.quantity_remaining}`;
@@ -624,6 +701,30 @@ function renderPack(pack, productName) {
   loadEvents(pack.id, recent);
 }
 
+async function addHouseholdPackControl(pack, card) {
+  try {
+    const households = (await api("/api/v1/households")).filter(household => household.role !== "viewer");
+    if (!households.length) return;
+    const row = document.createElement("div");
+    row.className = "stock-row";
+    const select = document.createElement("select");
+    const personal = document.createElement("option");
+    personal.value = "";
+    personal.textContent = "Personal cabinet";
+    select.append(personal);
+    households.forEach(household => { const option = document.createElement("option"); option.value = String(household.id); option.textContent = household.name; select.append(option); });
+    select.value = pack.household_id ? String(pack.household_id) : "";
+    const save = button("Set cabinet", "secondary compact");
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      try { await api(`/api/v1/packs/${pack.id}/household`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ household_id: select.value ? Number(select.value) : null }) }); await Promise.all([loadPacks(), loadMedicines()]); }
+      catch (error) { alert(error.message); save.disabled = false; }
+    });
+    row.append(select, save);
+    card.append(row);
+  } catch { /* Household membership is optional. */ }
+}
+
 async function findProduct(raw) {
   currentRaw = raw;
   savedScanProductId = null;
@@ -649,6 +750,7 @@ document.querySelector("#parse").addEventListener("click", () => findProduct(doc
 document.querySelector("#refresh-packs").addEventListener("click", loadPacks);
 document.querySelector("#refresh-medicines").addEventListener("click", loadMedicines);
 document.querySelector("#refresh-administration").addEventListener("click", loadAdministration);
+document.querySelector("#refresh-households").addEventListener("click", loadHouseholds);
 document.querySelector("#refresh-medikeep").addEventListener("click", loadMediKeep);
 document.querySelectorAll("[data-page-target]").forEach(button => {
   button.addEventListener("click", () => showPage(button.dataset.pageTarget));
@@ -667,6 +769,26 @@ authForm.addEventListener("submit", event => {
   authenticate("login");
 });
 document.querySelector("#create-account").addEventListener("click", () => authenticate("register"));
+document.querySelector("#create-household-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  householdResult.textContent = "Creating household…";
+  try {
+    const household = await api("/api/v1/households", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: document.querySelector("#household-name").value.trim() }) });
+    householdResult.textContent = `${household.name} is ready. You are its admin.`;
+    document.querySelector("#household-name").value = "";
+    await loadHouseholds();
+  } catch (error) { householdResult.textContent = error.message; }
+});
+document.querySelector("#device-token-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  deviceTokenResult.textContent = "Creating device token…";
+  try {
+    const created = await api("/api/v1/devices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: document.querySelector("#device-label").value.trim(), product_id: Number(document.querySelector("#device-product").value), administration_time: document.querySelector("#device-slot").value }) });
+    deviceTokenResult.textContent = `Copy this once. POST to /api/v1/device/taken with Authorization: Bearer ${created.token}`;
+    document.querySelector("#device-label").value = "";
+    await loadDeviceTokens();
+  } catch (error) { deviceTokenResult.textContent = error.message; }
+});
 document.querySelector("#sign-out").addEventListener("click", async () => {
   await api("/api/auth/logout", { method: "POST" });
   authForm.reset();

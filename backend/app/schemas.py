@@ -86,6 +86,7 @@ class PackCreate(BaseModel):
     quantity_initial: int = Field(gt=0)
     quantity_remaining: int = Field(ge=0)
     obtained_on: date | None = None
+    household_id: int | None = None
 
 
 class PackRead(PackCreate):
@@ -216,9 +217,52 @@ class ScannedPackCreate(BaseModel):
     obtained_on: date | None = None
     category: str = Field(default="medicine", pattern="^(medicine|otc|supplement|other)$")
     medikeep_medication_id: int | None = None
+    household_id: int | None = None
 
 
 class ScannedPackRead(BaseModel):
     product: ProductRead
     pack: PackRead
     created: bool
+
+
+class HouseholdCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class HouseholdMemberCreate(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    role: str = Field(default="viewer", pattern="^(admin|contributor|viewer)$")
+
+
+class HouseholdRead(BaseModel):
+    id: int
+    name: str
+    role: str
+    member_count: int
+
+
+class PackHouseholdUpdate(BaseModel):
+    household_id: int | None = None
+
+
+class DeviceTokenCreate(BaseModel):
+    label: str = Field(min_length=1, max_length=120)
+    product_id: int
+    administration_time: str = Field(pattern="^(morning|midday|evening|bedtime)$")
+
+
+class DeviceTokenRead(BaseModel):
+    id: int
+    label: str
+    product_id: int
+    administration_time: str
+    revoked_at: datetime | None = None
+    last_used_at: datetime | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DeviceTokenCreated(DeviceTokenRead):
+    token: str
