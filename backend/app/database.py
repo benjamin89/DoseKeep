@@ -53,3 +53,6 @@ def ensure_schema() -> None:
         event_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(supply_events)"))}
         if event_columns and "actor_name" not in event_columns:
             connection.execute(text("ALTER TABLE supply_events ADD COLUMN actor_name TEXT"))
+        guest_link_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(cabinet_guest_links)"))}
+        if guest_link_columns and "encrypted_token" not in guest_link_columns:
+            connection.execute(text("ALTER TABLE cabinet_guest_links ADD COLUMN encrypted_token TEXT"))

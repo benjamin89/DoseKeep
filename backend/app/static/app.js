@@ -146,8 +146,8 @@ async function loadHouseholds() {
         guestName.className = "schedule-option";
         const guestNameCheck = document.createElement("input");
         guestNameCheck.type = "checkbox";
-        guestNameCheck.checked = true;
-        guestName.append(guestNameCheck, document.createTextNode(" Ask guests for their name"));
+        guestNameCheck.checked = false;
+        guestName.append(guestNameCheck, document.createTextNode(" Allow anonymous guest use"));
         const createGuest = button("Create guest QR/link", "secondary compact");
         createGuest.type = "submit";
         const guestResult = document.createElement("p");
@@ -156,7 +156,7 @@ async function loadHouseholds() {
         guestForm.addEventListener("submit", async event => {
           event.preventDefault();
           try {
-            const link = await api(`/api/v1/households/${household.id}/guest-links`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: guestLabel.value.trim(), require_name: guestNameCheck.checked }) });
+            const link = await api(`/api/v1/households/${household.id}/guest-links`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: guestLabel.value.trim(), require_name: !guestNameCheck.checked }) });
             guestResult.replaceChildren();
             guestResult.append("New guest link: ");
             const anchor = document.createElement("a");
@@ -185,6 +185,23 @@ async function loadHouseholds() {
               const row = document.createElement("p");
               row.className = "medicine-note";
               row.textContent = `${link.label} · ${link.require_name ? "name required" : "anonymous allowed"} `;
+              if (link.url) {
+                const open = document.createElement("a");
+                open.href = link.url;
+                open.textContent = "Open QR/link";
+                open.target = "_blank";
+                row.append(open, document.createTextNode(" "));
+                const qr = document.createElement("img");
+                qr.src = link.qr_data_url;
+                qr.alt = `QR code for ${link.label}`;
+                qr.width = 160;
+                qr.height = 160;
+                qr.style.display = "block";
+                qr.style.marginTop = ".5rem";
+                row.append(qr);
+              } else {
+                row.append(document.createTextNode(" · Recreate this legacy link to make its QR available."));
+              }
               const revoke = button("Revoke", "secondary compact");
               revoke.addEventListener("click", async () => { await api(`/api/v1/households/${household.id}/guest-links/${link.id}`, { method: "DELETE" }); await loadGuestLinks(); });
               row.append(revoke);

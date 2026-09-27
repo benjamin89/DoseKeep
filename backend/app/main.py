@@ -194,6 +194,23 @@ def cabinet_guest_link(token: str, session: Session) -> CabinetGuestLink:
     return record
 
 
+def cabinet_guest_url(record: CabinetGuestLink) -> str | None:
+    if not record.encrypted_token:
+        return None
+    try:
+        token = decrypt_config(record.encrypted_token)["token"]
+    except Exception:
+        return None
+    return f"{os.getenv('DOSEKEEP_PUBLIC_URL', 'https://dosekeep.godsil.co.uk').rstrip('/')}/cabinet/{token}"
+
+
+def cabinet_qr_data_url(url: str) -> str:
+    image = qrcode.make(url)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
+
+
 @app.get("/api/v1/admin/overview")
 def system_admin_overview(user: User = Depends(current_user), session: Session = Depends(get_session)):
     """Minimal operational overview; it deliberately excludes health details."""
@@ -706,10 +723,19 @@ def add_household_member(
 @app.get("/api/v1/households/{household_id}/guest-links")
 def list_cabinet_guest_links(household_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
     require_household_role(user, household_id, "admin", session)
-    return [
-        {"id": item.id, "label": item.label, "require_name": item.require_name, "revoked_at": item.revoked_at, "created_at": item.created_at}
-        for item in session.query(CabinetGuestLink).filter_by(household_id=household_id).order_by(CabinetGuestLink.created_at.desc()).all()
-    ]
+    result = []
+    for item in session.query(CabinetGuestLink).filter_by(household_id=household_id).order_by(CabinetGuestLink.created_at.desc()).all():
+        url = cabinet_guest_url(item) if not item.revoked_at else None
+        result.append({
+            "id": item.id,
+            "label": item.label,
+            "require_name": item.require_name,
+            "revoked_at": item.revoked_at,
+            "created_at": item.created_at,
+            "url": url,
+            "qr_data_url": cabinet_qr_data_url(url) if url else None,
+        })
+    return result
 
 
 @app.post("/api/v1/households/{household_id}/guest-links", status_code=201)
@@ -726,19 +752,17 @@ def create_cabinet_guest_link(
         label=payload.label.strip(),
         require_name=payload.require_name,
         token_hash=hashlib.sha256(token.encode()).hexdigest(),
+        encrypted_token=encrypt_config({"token": token}),
     )
     session.add(record)
     session.commit()
-    url = f"{os.getenv('DOSEKEEP_PUBLIC_URL', 'https://dosekeep.godsil.co.uk').rstrip('/')}/cabinet/{token}"
-    image = qrcode.make(url)
-    buffer = BytesIO()
-    image.save(buffer, format="PNG")
+    url = cabinet_guest_url(record)
     return {
         "id": record.id,
         "label": record.label,
         "require_name": record.require_name,
         "url": url,
-        "qr_data_url": f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}",
+        "qr_data_url": cabinet_qr_data_url(url),
     }
 
 
@@ -754,10 +778,7 @@ def revoke_cabinet_guest_link(household_id: int, link_id: int, user: User = Depe
 
 
 def cabinet_actor_name(request: Request, link: CabinetGuestLink, session: Session) -> str | None:
-    user_id = request.session.get("user_id")
-    if user := session.get(User, user_id):
-        return user.email
-    return request.session.get(f"cabinet_guest_{link.id}")
+    return request.session.get(f"cabinet_actor_{link.id}")
 
 
 @app.get("/cabinet/{token}", response_class=HTMLResponse)
@@ -765,6 +786,7 @@ def cabinet_guest_page(token: str, request: Request, session: Session = Depends(
     link = cabinet_guest_link(token, session)
     household = session.get(Household, link.household_id)
     actor = cabinet_actor_name(request, link, session)
+    signed_in_user = session.get(User, request.session.get("user_id"))
     packs = session.query(Pack).filter_by(household_id=link.household_id, status="active").filter(Pack.quantity_remaining > 0).all()
     totals: dict[int, int] = {}
     for pack in packs:
@@ -777,16 +799,21 @@ def cabinet_guest_page(token: str, request: Request, session: Session = Depends(
         items.append(f"<section><h2>{name}</h2><p>{quantity} item{'s' if quantity != 1 else ''} available</p>{action}</section>")
     content = "".join(items) or "<p>No cabinet stock is currently recorded.</p>"
     required = "required" if link.require_name else ""
+    account_choice = (
+        f'<button type="button" id="account-choice">Continue as {html.escape(signed_in_user.email)}</button>'
+        if signed_in_user
+        else '<p>Already registered? <a href="/">Sign in to DoseKeep</a>, then return to this QR link.</p>'
+    )
     identity = (
         f"<p>Recording as <strong>{html.escape(actor)}</strong>.</p>"
         if actor
-        else f'''<form id="guest-form"><label for="guest-name">Your name{' (required)' if link.require_name else ' (optional)'}</label><input id="guest-name" maxlength="120" {required} placeholder="Name for the cabinet record" /><button>Continue as guest</button></form><p>Already registered? <a href="/">Sign in to DoseKeep</a>, then return to this QR link.</p>'''
+        else f'''{account_choice}<form id="guest-form"><label for="guest-name">Your name{' (required)' if link.require_name else ' (optional)'}</label><input id="guest-name" maxlength="120" {required} placeholder="Name for the cabinet record" /><button>Continue as guest</button></form>'''
     )
     return HTMLResponse(
         f'''<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(household.name)} cabinet</title>
 <style>body{{font-family:system-ui,sans-serif;background:#f7f8f4;color:#173222;margin:0;padding:1.25rem;max-width:38rem}}section,form{{background:#fff;padding:1.1rem;margin:1rem 0;border-radius:1rem;box-shadow:0 1px 3px #0002}}h1,h2{{margin:.1rem 0 .5rem}}p{{color:#475569}}input,button{{width:100%;box-sizing:border-box;margin-top:.6rem;padding:.8rem;border-radius:.55rem;font:inherit}}input{{border:1px solid #9ca3af}}button{{border:0;background:#166534;color:white;font-weight:700}}#result{{font-weight:700}}</style>
 <h1>{html.escape(household.name)} cabinet</h1><p>Shared cabinet access</p>{identity}<div id="items">{content}</div><p id="result"></p>
-<script>const result=document.querySelector('#result');const guest=document.querySelector('#guest-form');if(guest)guest.addEventListener('submit',async event=>{{event.preventDefault();const response=await fetch(location.pathname+'/guest',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{name:document.querySelector('#guest-name').value}})}});if(response.ok)location.reload();else result.textContent=(await response.json()).detail||'Could not continue';}});document.querySelectorAll('[data-product-id]').forEach(button=>button.addEventListener('click',async()=>{{button.disabled=true;const response=await fetch(location.pathname+'/record',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{product_id:Number(button.dataset.productId)}})}});const data=await response.json();if(response.ok){{result.textContent=`Recorded: ${{data.product_name}}.`;location.reload();}}else{{result.textContent=data.detail||'Could not record use';button.disabled=false;}}}}));</script></html>'''
+<script>const result=document.querySelector('#result');async function identity(body){{const response=await fetch(location.pathname+'/guest',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(body)}});if(response.ok)location.reload();else result.textContent=(await response.json()).detail||'Could not continue';}}const guest=document.querySelector('#guest-form');if(guest)guest.addEventListener('submit',event=>{{event.preventDefault();identity({{mode:'guest',name:document.querySelector('#guest-name').value}});}});const account=document.querySelector('#account-choice');if(account)account.addEventListener('click',()=>identity({{mode:'account'}}));document.querySelectorAll('[data-product-id]').forEach(button=>button.addEventListener('click',async()=>{{button.disabled=true;const response=await fetch(location.pathname+'/record',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{product_id:Number(button.dataset.productId)}})}});const data=await response.json();if(response.ok){{result.textContent=`Recorded: ${{data.product_name}}.`;location.reload();}}else{{result.textContent=data.detail||'Could not record use';button.disabled=false;}}}}));</script></html>'''
     )
 
 
@@ -794,12 +821,20 @@ def cabinet_guest_page(token: str, request: Request, session: Session = Depends(
 async def identify_cabinet_guest(token: str, request: Request, session: Session = Depends(get_session)):
     link = cabinet_guest_link(token, session)
     try:
-        name = str((await request.json()).get("name", "")).strip()
+        body = await request.json()
+        mode = body.get("mode", "guest")
+        name = str(body.get("name", "")).strip()
     except Exception:
+        mode = "guest"
         name = ""
+    if mode == "account":
+        user = session.get(User, request.session.get("user_id"))
+        if not user:
+            raise HTTPException(status_code=401, detail="Sign in before selecting your account")
+        name = user.email
     if link.require_name and not name:
         raise HTTPException(status_code=422, detail="Enter your name to use this cabinet")
-    request.session[f"cabinet_guest_{link.id}"] = name or "Guest"
+    request.session[f"cabinet_actor_{link.id}"] = name or "Guest"
     return {"ok": True}
 
 

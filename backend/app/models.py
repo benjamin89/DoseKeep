@@ -107,6 +107,7 @@ class CabinetGuestLink(Base):
     household_id: Mapped[int] = mapped_column(ForeignKey("households.id"), index=True)
     label: Mapped[str] = mapped_column(String(120))
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    encrypted_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     require_name: Mapped[bool] = mapped_column(default=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
