@@ -557,6 +557,8 @@ function renderMedicine(medicine) {
     card.append(importButton);
   }
   if (medicine.product_id) {
+    const medicineActions = document.createElement("div");
+    medicineActions.className = "medicine-actions";
     const commonNameButton = button("Edit common name", "secondary compact");
     const commonNameEditor = document.createElement("div");
     commonNameEditor.className = "schedule-editor";
@@ -592,7 +594,8 @@ function renderMedicine(medicine) {
     });
     commonNameEditor.append(commonNameLabel, commonNameInput, commonNameHint, saveCommonName);
     commonNameButton.addEventListener("click", () => { commonNameEditor.hidden = !commonNameEditor.hidden; });
-    card.append(commonNameButton, commonNameEditor);
+    medicineActions.append(commonNameButton);
+    card.append(medicineActions, commonNameEditor);
 
     const scheduleButton = button(
       medicine.regular_times.length || medicine.as_required ? "Edit administration plan" : "Set administration plan",
@@ -665,7 +668,8 @@ function renderMedicine(medicine) {
     });
     editor.append(saveSchedule);
     scheduleButton.addEventListener("click", () => { editor.hidden = !editor.hidden; });
-    card.append(scheduleButton, editor);
+    medicineActions.append(scheduleButton);
+    card.append(editor);
   }
   medicinesContainer.append(card);
 }
