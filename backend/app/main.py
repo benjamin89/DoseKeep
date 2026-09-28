@@ -1096,6 +1096,19 @@ def generate_today_doses(user: User, session: Session) -> None:
             seen_medikeep_ids.add(link.medikeep_medication_id)
             external = all_by_id.get(link.medikeep_medication_id)
             if external and external.status != "active":
+                # A dose may have been generated before MediKeep was refreshed.
+                # Remove only today's unactioned entries: actual historic MAR
+                # actions remain intact, while a stopped medicine is not shown
+                # as overdue or missed.
+                removed = session.query(ScheduledDose).filter(
+                    ScheduledDose.user_id == user.id,
+                    ScheduledDose.product_id == schedule.product_id,
+                    ScheduledDose.scheduled_for >= day_start,
+                    ScheduledDose.scheduled_for < day_end,
+                    ScheduledDose.status.in_(("due", "snoozed")),
+                ).delete(synchronize_session=False)
+                if removed:
+                    generated = True
                 continue
         dose_quantities = schedule_dose_quantities(schedule)
         scheduled_slots = set(dose_quantities)
@@ -1404,10 +1417,25 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
         .all()
     )
     names = medication_display_names(user, session)
+    inactive_product_ids = set()
+    try:
+        current_medications = {item.id: item for item in all_medications(user_medikeep_config(user, session))}
+        inactive_product_ids = {
+            link.product_id
+            for link in session.query(MediKeepLink).filter_by(user_id=user.id).all()
+            if (medicine := current_medications.get(link.medikeep_medication_id)) and medicine.status != "active"
+        }
+    except (MediKeepUnavailable, HTTPException):
+        pass
     totals = {"taken": 0, "skipped": 0, "missed": 0, "pending": 0}
     by_product: dict[int, dict] = {}
     exceptions = []
     for dose in doses:
+        # Retain real historical taken/skipped actions. Do not retroactively
+        # count an unactioned scheduled dose as missed when MediKeep now says
+        # that medicine is stopped.
+        if dose.product_id in inactive_product_ids and dose.status in {"due", "snoozed"}:
+            continue
         outcome = "missed"
         if dose.status == "taken":
             outcome = "taken"
