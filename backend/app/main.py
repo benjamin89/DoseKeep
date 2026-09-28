@@ -54,6 +54,7 @@ from .schemas import (
     MedicineOverviewRead,
     MedicationScheduleUpdate,
     NotificationSettings,
+    PRNDoseCreate,
     ScheduledDoseAction,
     ScheduledDoseRead,
     PackCreate,
@@ -646,6 +647,7 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
             "linked_to_medikeep": bool(link),
             "medikeep_status": external.status if external else None,
             "regular_times": json.loads(schedule.regular_times) if schedule else [],
+            "dose_quantities": schedule_dose_quantities(schedule),
             "as_required": schedule.as_required if schedule else False,
             "prn_notes": schedule.prn_notes if schedule else None,
         }
@@ -670,6 +672,7 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
                 "linked_to_medikeep": True,
                 "medikeep_status": medication.status,
                 "regular_times": [],
+                "dose_quantities": {},
                 "as_required": False,
                 "prn_notes": None,
             }
@@ -677,7 +680,7 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
     # so show stock but avoid inventing a misleading date for it.
     today = datetime.now(timezone.utc).astimezone(user_zone(user)).date()
     for card in cards.values():
-        daily_dose_count = len(card["regular_times"])
+        daily_dose_count = sum(card["dose_quantities"].get(slot, 1) for slot in card["regular_times"])
         available = card["quantity_remaining"] + card["quantity_in_dosette"]
         card["daily_dose_count"] = daily_dose_count
         if available <= 0:
@@ -690,6 +693,18 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
             card["stock_status"] = "unknown"
             card["estimated_run_out_date"] = None
     return sorted(cards.values(), key=lambda item: item["name"].casefold())
+
+
+def schedule_dose_quantities(schedule: MedicationSchedule | None) -> dict[str, float]:
+    """Read per-slot units while preserving one-unit legacy plans."""
+    if not schedule:
+        return {}
+    slots = json.loads(schedule.regular_times or "[]")
+    try:
+        saved = json.loads(schedule.regular_doses or "{}")
+    except (TypeError, json.JSONDecodeError):
+        saved = {}
+    return {slot: float(saved.get(slot, 1)) for slot in slots}
 
 
 @app.put("/api/v1/products/{product_id}/common-name")
@@ -1020,7 +1035,9 @@ def update_medication_schedule(
     if not schedule:
         schedule = MedicationSchedule(user_id=user.id, product_id=product_id)
         session.add(schedule)
-    schedule.regular_times = json.dumps(sorted(set(payload.regular_times)))
+    regular_times = sorted(set(payload.regular_times))
+    schedule.regular_times = json.dumps(regular_times)
+    schedule.regular_doses = json.dumps({slot: payload.dose_quantities.get(slot, 1) for slot in regular_times})
     schedule.as_required = payload.as_required
     schedule.prn_notes = payload.prn_notes.strip() if payload.prn_notes else None
     # Retire today’s still-pending doses for slots removed from this plan.
@@ -1080,7 +1097,8 @@ def generate_today_doses(user: User, session: Session) -> None:
             external = all_by_id.get(link.medikeep_medication_id)
             if external and external.status != "active":
                 continue
-        scheduled_slots = set(json.loads(schedule.regular_times))
+        dose_quantities = schedule_dose_quantities(schedule)
+        scheduled_slots = set(dose_quantities)
         # Also clear old pending records when a plan was changed before this
         # cleanup was available. This repairs today's duplicate slot on load.
         stale_doses = session.query(ScheduledDose).filter(
@@ -1127,8 +1145,14 @@ def generate_today_doses(user: User, session: Session) -> None:
                 if exists:
                     exists.scheduled_for = due
                     exists.due_at = due
+                    exists.quantity = dose_quantities[slot]
                     exists.notified_at = None
                     generated = True
+            elif exists.status in {"due", "snoozed"} and exists.quantity != dose_quantities[slot]:
+                # A still-pending dose follows an edited plan. Once taken or
+                # skipped, the stored quantity remains its MAR snapshot.
+                exists.quantity = dose_quantities[slot]
+                generated = True
             if not exists:
                 session.add(
                     ScheduledDose(
@@ -1137,6 +1161,7 @@ def generate_today_doses(user: User, session: Session) -> None:
                         administration_time=slot,
                         scheduled_for=due,
                         due_at=due,
+                        quantity=dose_quantities[slot],
                     )
                 )
                 generated = True
@@ -1177,6 +1202,7 @@ def dose_read(dose: ScheduledDose, session: Session, display_names: dict[int, st
         "scheduled_for": dose.scheduled_for,
         "due_at": dose.due_at,
         "status": dose.status,
+        "quantity": dose.quantity,
         "actioned_at": dose.actioned_at,
         "notes": dose.notes,
         "stock_available": stock,
@@ -1243,10 +1269,10 @@ def process_due_notifications(session: Session) -> None:
                     for pack in session.query(Pack).filter(accessible_pack_filter(user, session), Pack.product_id == dose.product_id, Pack.status == "active").all()
                 )
                 if stock <= 0:
-                    details.append(f"{medicine} (no stock recorded)")
+                    details.append(f"{medicine} ({dose.quantity:g} item{'s' if dose.quantity != 1 else ''}; no stock recorded)")
                     has_no_stock = True
                 else:
-                    details.append(f"{medicine} ({stock} available)")
+                    details.append(f"{medicine} ({dose.quantity:g} item{'s' if dose.quantity != 1 else ''}; {stock:g} available)")
             slot = administration_time.title()
             if has_no_stock:
                 title = f"DoseKeep: {slot} medicines due — stock warning"
@@ -1296,22 +1322,39 @@ def related_product_ids(user: User, product_id: int, session: Session) -> list[i
     ]
 
 
-def oldest_stock_pack(user: User, product_id: int, session: Session) -> Pack | None:
+def stock_packs(user: User, product_id: int, session: Session) -> list[Pack]:
     product_ids = related_product_ids(user, product_id, session)
     return (
         session.query(Pack)
         .filter(accessible_pack_filter(user, session), Pack.product_id.in_(product_ids), Pack.status == "active", Pack.quantity_remaining > 0)
         .order_by(Pack.expiry_date.is_(None), Pack.expiry_date, Pack.id)
-        .first()
+        .all()
     )
 
 
+def oldest_stock_pack(user: User, product_id: int, session: Session) -> Pack | None:
+    return next(iter(stock_packs(user, product_id, session)), None)
+
+
+def consume_stock(user: User, product_id: int, quantity: float, session: Session, notes: str) -> None:
+    """Deduct a dose across packs in expiry order, including fractional units."""
+    packs = stock_packs(user, product_id, session)
+    if sum(pack.quantity_remaining for pack in packs) + 1e-9 < quantity:
+        raise HTTPException(status_code=409, detail="No recorded pack has enough stock for this dose")
+    remaining = quantity
+    for pack in packs:
+        used = min(pack.quantity_remaining, remaining)
+        if used <= 0:
+            continue
+        pack.quantity_remaining = round(pack.quantity_remaining - used, 6)
+        session.add(SupplyEvent(pack_id=pack.id, event_type="taken_from_pack", quantity=used, notes=notes))
+        remaining = round(remaining - used, 6)
+        if remaining <= 1e-9:
+            break
+
+
 def record_taken_dose(dose: ScheduledDose, user: User, session: Session, now: datetime, notes: str | None = None) -> None:
-    pack = oldest_stock_pack(user, dose.product_id, session)
-    if not pack:
-        raise HTTPException(status_code=409, detail="No recorded pack has stock for this medicine")
-    pack.quantity_remaining -= 1
-    session.add(SupplyEvent(pack_id=pack.id, event_type="taken_from_pack", quantity=1, notes=notes or f"Scheduled {dose.administration_time} dose"))
+    consume_stock(user, dose.product_id, dose.quantity, session, notes or f"Scheduled {dose.administration_time} dose")
     dose.status = "taken"
     dose.actioned_at = now
     dose.notes = notes
@@ -1534,7 +1577,7 @@ def reminder_action_page(token: str, session: Session = Depends(get_session)):
         due = dose.due_at.replace(tzinfo=timezone.utc).astimezone(zone).strftime("%H:%M")
         medicine = html.escape(names.get(dose.product_id) or (session.get(Product, dose.product_id).name if session.get(Product, dose.product_id) else "Medicine"))
         cards.append(
-            f'<section><h2>{medicine}</h2><p>{html.escape(dose.administration_time.title())} · due {due}</p>'
+            f'<section><h2>{medicine}</h2><p>{html.escape(dose.administration_time.title())} · {dose.quantity:g} item{'s' if dose.quantity != 1 else ''} · due {due}</p>'
             f'<div class="actions" data-dose-id="{dose.id}"><button data-action="skipped" class="skip">Skip</button>'
             '<button data-action="taken" class="taken">Taken</button><button data-action="snooze">Snooze 15 min</button></div></section>'
         )
@@ -1671,7 +1714,7 @@ def record_device_taken(authorization: str | None = Header(default=None), sessio
 
 
 @app.post("/api/v1/products/{product_id}/prn", response_model=ScheduledDoseRead, status_code=201)
-def record_prn_dose(product_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
+def record_prn_dose(product_id: int, payload: PRNDoseCreate, user: User = Depends(current_user), session: Session = Depends(get_session)):
     product_ids = related_product_ids(user, product_id, session)
     schedules = session.query(MedicationSchedule).filter(
         MedicationSchedule.user_id == user.id,
@@ -1679,12 +1722,8 @@ def record_prn_dose(product_id: int, user: User = Depends(current_user), session
     ).all()
     if not schedules or not any(schedule.as_required for schedule in schedules):
         raise HTTPException(status_code=409, detail="This medicine does not have an As required (PRN) plan")
-    pack = oldest_stock_pack(user, product_id, session)
-    if not pack:
-        raise HTTPException(status_code=409, detail="No recorded pack has stock for this medicine")
     now = datetime.utcnow()
-    pack.quantity_remaining -= 1
-    session.add(SupplyEvent(pack_id=pack.id, event_type="taken_from_pack", quantity=1, notes="PRN dose"))
+    consume_stock(user, product_id, payload.quantity, session, "PRN dose")
     record = ScheduledDose(
         user_id=user.id,
         product_id=product_id,
@@ -1693,6 +1732,7 @@ def record_prn_dose(product_id: int, user: User = Depends(current_user), session
         due_at=now,
         status="taken",
         actioned_at=now,
+        quantity=payload.quantity,
         notes="Recorded PRN dose",
     )
     session.add(record)

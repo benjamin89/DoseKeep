@@ -10,6 +10,7 @@ DoseKeep is a self-hosted companion for tracking medicines, supplements and othe
 - creates a confirmed pack record, including its serial, batch and expiry;
 - shows active packs with physical stock, expiry and recent supply activity;
 - records a direct-from-pack dose (for medicines such as evening atorvastatin) or a skipped dose;
+- supports per-time doses such as two tablets in the morning or half a tablet at bedtime, with fractional stock and run-out estimates;
 - lets you correct a physical tablet count without inventing historical dose events;
 - supports pack-to-dosette allocation and taken/disposed supply events through the REST API;
 - serves a mobile-friendly installable web app;

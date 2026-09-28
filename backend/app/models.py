@@ -7,7 +7,7 @@ MediKeep medication id without requiring that integration.
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -142,9 +142,11 @@ class Pack(Base):
     serial_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
     batch_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
     expiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    quantity_initial: Mapped[int] = mapped_column(Integer)
-    quantity_remaining: Mapped[int] = mapped_column(Integer)
-    quantity_in_dosette: Mapped[int] = mapped_column(Integer, default=0)
+    # Quantities are measured in pack units. A unit is usually a tablet, but
+    # may legitimately be half a tablet when a scored tablet is prescribed.
+    quantity_initial: Mapped[float] = mapped_column(Float)
+    quantity_remaining: Mapped[float] = mapped_column(Float)
+    quantity_in_dosette: Mapped[float] = mapped_column(Float, default=0)
     obtained_on: Mapped[date] = mapped_column(Date, default=date.today)
     status: Mapped[str] = mapped_column(String(30), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -202,6 +204,9 @@ class MedicationSchedule(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     regular_times: Mapped[str] = mapped_column(Text, default="[]")
+    # Mapping of administration slot to units, e.g. {"morning": 2,
+    # "bedtime": 0.5}. regular_times remains for backwards compatibility.
+    regular_doses: Mapped[str] = mapped_column(Text, default="{}")
     as_required: Mapped[bool] = mapped_column(default=False)
     prn_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -223,6 +228,9 @@ class ScheduledDose(Base):
     scheduled_for: Mapped[datetime] = mapped_column(DateTime, index=True)
     due_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     status: Mapped[str] = mapped_column(String(20), default="due", index=True)
+    # Snapshot the planned quantity so historic MAR records do not change if
+    # someone later edits their administration plan.
+    quantity: Mapped[float] = mapped_column(Float, default=1)
     actioned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Set only after ntfy has accepted the message. Snoozing clears this so
@@ -240,7 +248,7 @@ class SupplyEvent(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     pack_id: Mapped[int] = mapped_column(ForeignKey("packs.id"))
     event_type: Mapped[str] = mapped_column(String(30))
-    quantity: Mapped[int] = mapped_column(Integer)
+    quantity: Mapped[float] = mapped_column(Float)
     occurred_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     actor_name: Mapped[str | None] = mapped_column(String(120), nullable=True)

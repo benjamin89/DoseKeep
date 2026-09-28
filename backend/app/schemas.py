@@ -84,8 +84,8 @@ class PackCreate(BaseModel):
     serial_number: str | None = None
     batch_number: str | None = None
     expiry_date: date | None = None
-    quantity_initial: int = Field(gt=0)
-    quantity_remaining: int = Field(ge=0)
+    quantity_initial: float = Field(gt=0)
+    quantity_remaining: float = Field(ge=0)
     obtained_on: date | None = None
     household_id: int | None = None
 
@@ -93,7 +93,7 @@ class PackCreate(BaseModel):
 class PackRead(PackCreate):
     id: int
     status: str
-    quantity_in_dosette: int
+    quantity_in_dosette: float
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -101,7 +101,7 @@ class PackRead(PackCreate):
 
 class SupplyEventCreate(BaseModel):
     event_type: str = Field(pattern="^(dosette_fill|taken|taken_from_pack|skipped|disposed|correction)$")
-    quantity: int = Field(gt=0)
+    quantity: float = Field(gt=0)
     notes: str | None = None
 
 
@@ -125,7 +125,7 @@ class HouseholdInviteCreate(BaseModel):
 
 
 class StockCorrection(BaseModel):
-    quantity_remaining: int = Field(ge=0)
+    quantity_remaining: float = Field(ge=0)
     notes: str | None = None
 
 
@@ -174,21 +174,23 @@ class MedicineOverviewRead(BaseModel):
     dosage: str | None = None
     route: str | None = None
     frequency: str | None = None
-    quantity_remaining: int = 0
-    quantity_in_dosette: int = 0
+    quantity_remaining: float = 0
+    quantity_in_dosette: float = 0
     active_pack_count: int = 0
     linked_to_medikeep: bool = False
     medikeep_status: str | None = None
     regular_times: list[str] = []
+    dose_quantities: dict[str, float] = {}
     as_required: bool = False
     prn_notes: str | None = None
-    daily_dose_count: int = 0
+    daily_dose_count: float = 0
     estimated_run_out_date: date | None = None
     stock_status: str = "unknown"
 
 
 class MedicationScheduleUpdate(BaseModel):
     regular_times: list[str] = []
+    dose_quantities: dict[str, float] = {}
     as_required: bool = False
     prn_notes: str | None = Field(default=None, max_length=500)
 
@@ -196,6 +198,10 @@ class MedicationScheduleUpdate(BaseModel):
         allowed = {"morning", "midday", "evening", "bedtime"}
         if any(value not in allowed for value in self.regular_times):
             raise ValueError("Administration times must be morning, midday, evening or bedtime")
+        if any(slot not in allowed for slot in self.dose_quantities):
+            raise ValueError("Dose quantities must use a valid administration time")
+        if any(quantity <= 0 or quantity > 100 for quantity in self.dose_quantities.values()):
+            raise ValueError("Each dose quantity must be greater than 0 and no more than 100 items")
 
 
 class CommonNameUpdate(BaseModel):
@@ -212,15 +218,20 @@ class ScheduledDoseRead(BaseModel):
     scheduled_for: datetime
     due_at: datetime
     status: str
+    quantity: float = 1
     actioned_at: datetime | None = None
     notes: str | None = None
-    stock_available: int = 0
+    stock_available: float = 0
 
 
 class ScheduledDoseAction(BaseModel):
     action: str = Field(pattern="^(taken|skipped|snooze)$")
     snooze_minutes: int = Field(default=15, ge=5, le=240)
     notes: str | None = Field(default=None, max_length=500)
+
+
+class PRNDoseCreate(BaseModel):
+    quantity: float = Field(default=1, gt=0, le=100)
 
 
 class ScannedPackCreate(BaseModel):

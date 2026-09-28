@@ -53,6 +53,16 @@ function utcDate(value) {
   return new Date(/[zZ]$|[+-]\d{2}:\d{2}$/.test(value) ? value : `${value}Z`);
 }
 
+function formatQuantity(value) {
+  const quantity = Number(value ?? 1);
+  return Number.isInteger(quantity) ? String(quantity) : String(quantity);
+}
+
+function doseLabel(quantity) {
+  const formatted = formatQuantity(quantity);
+  return `${formatted} ${Number(quantity) === 1 ? "item" : "items"}`;
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const payload = await response.json();
@@ -357,7 +367,7 @@ async function loadAdministration() {
           const skippedAt = utcDate(dose.actioned_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
           doseState = `skipped at ${skippedAt}`;
         }
-        description.textContent = `${dose.medicine_name}${details ? ` — ${details}` : ""}${doseState ? ` · ${doseState}` : ""}`;
+        description.textContent = `${dose.medicine_name}${details ? ` — ${details}` : ""} · ${doseLabel(dose.quantity)}${doseState ? ` · ${doseState}` : ""}`;
         item.append(description);
         if (canRecordEarly || (!future && ["due", "snoozed"].includes(dose.status))) {
           const actions = document.createElement("div");
@@ -410,7 +420,18 @@ async function loadAdministration() {
         control.addEventListener("click", async () => {
           control.disabled = true;
           try {
-            await api(`/api/v1/products/${medicine.product_id}/prn`, { method: "POST" });
+            const entered = prompt("How many tablets/items did you take?", "1");
+            if (entered === null) {
+              control.disabled = false;
+              return;
+            }
+            const quantity = Number(entered);
+            if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Enter a quantity greater than 0.");
+            await api(`/api/v1/products/${medicine.product_id}/prn`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ quantity }),
+            });
             await Promise.all([loadAdministration(), loadMedicines(), loadPacks()]);
           } catch (error) {
             alert(`Could not record PRN dose: ${error.message}`);
@@ -424,7 +445,7 @@ async function loadAdministration() {
       if (recorded.length) {
         const history = document.createElement("p");
         history.className = "medicine-note";
-        history.textContent = `Recorded today: ${recorded.map(dose => `${dose.medicine_name} at ${utcDate(dose.actioned_at || dose.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`).join("; ")}.`;
+        history.textContent = `Recorded today: ${recorded.map(dose => `${dose.medicine_name} (${doseLabel(dose.quantity)}) at ${utcDate(dose.actioned_at || dose.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`).join("; ")}.`;
         section.append(history);
       }
       administrationContainer.append(section);
@@ -609,7 +630,7 @@ function renderMedicine(medicine) {
   const notes = [];
   if (medicine.stock_status === "out_of_stock") notes.push("out of stock");
   else if (medicine.estimated_run_out_date) notes.push(`estimated run-out: ${new Date(`${medicine.estimated_run_out_date}T00:00:00`).toLocaleDateString()}`);
-  if (medicine.regular_times.length) notes.push(`regular: ${medicine.regular_times.join(", ")}`);
+  if (medicine.regular_times.length) notes.push(`regular: ${medicine.regular_times.map(time => `${time} (${formatQuantity(medicine.dose_quantities?.[time] ?? 1)})`).join(", ")}`);
   if (medicine.as_required) notes.push(`when required${medicine.prn_notes ? ` — ${medicine.prn_notes}` : ""}`);
   if (medicine.active_pack_count) notes.push(`${medicine.active_pack_count} active pack${medicine.active_pack_count === 1 ? "" : "s"}`);
   if (medicine.quantity_in_dosette) notes.push(`${medicine.quantity_in_dosette} in dosette`);
@@ -689,6 +710,7 @@ function renderMedicine(medicine) {
       : "No MediKeep directions linked. Choose the times you use this medicine.";
     editor.append(importedDirections);
     const selected = new Set(medicine.regular_times);
+    const doseInputs = {};
     ["morning", "midday", "evening", "bedtime"].forEach(time => {
       const wrapper = document.createElement("label");
       wrapper.className = "schedule-option";
@@ -696,7 +718,15 @@ function renderMedicine(medicine) {
       input.type = "checkbox";
       input.value = time;
       input.checked = selected.has(time);
-      wrapper.append(input, document.createTextNode(time[0].toUpperCase() + time.slice(1)));
+      const doseInput = document.createElement("input");
+      doseInput.type = "number";
+      doseInput.min = "0.01";
+      doseInput.max = "100";
+      doseInput.step = "0.5";
+      doseInput.value = String(medicine.dose_quantities?.[time] ?? 1);
+      doseInput.setAttribute("aria-label", `${time} dose quantity`);
+      doseInputs[time] = doseInput;
+      wrapper.append(input, document.createTextNode(`${time[0].toUpperCase() + time.slice(1)} dose:`), doseInput, document.createTextNode(" items"));
       editor.append(wrapper);
     });
     const prnLabel = document.createElement("label");
@@ -713,22 +743,28 @@ function renderMedicine(medicine) {
     const saveSchedule = button("Save administration plan", "compact");
     saveSchedule.addEventListener("click", async () => {
       saveSchedule.disabled = true;
-      editor.hidden = true;
-      editor.remove();
       const regular_times = [...editor.querySelectorAll('input[type="checkbox"]')]
         .filter(input => input !== prn && input.checked)
         .map(input => input.value);
+      const dose_quantities = Object.fromEntries(regular_times.map(time => [time, Number(doseInputs[time].value)]));
+      if (Object.values(dose_quantities).some(quantity => !Number.isFinite(quantity) || quantity <= 0)) {
+        alert("Enter a dose quantity greater than 0 for each selected time.");
+        saveSchedule.disabled = false;
+        editor.hidden = false;
+        return;
+      }
       try {
         const updated = await api(`/api/v1/products/${medicine.product_id}/schedule`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ regular_times, as_required: prn.checked, prn_notes: prnNotes.value.trim() || null }),
+          body: JSON.stringify({ regular_times, dose_quantities, as_required: prn.checked, prn_notes: prnNotes.value.trim() || null }),
         });
         medicine.regular_times = updated.regular_times;
+        medicine.dose_quantities = updated.dose_quantities;
         medicine.as_required = updated.as_required;
         medicine.prn_notes = updated.prn_notes;
         const updatedNotes = [];
-        if (medicine.regular_times.length) updatedNotes.push(`regular: ${medicine.regular_times.join(", ")}`);
+        if (medicine.regular_times.length) updatedNotes.push(`regular: ${medicine.regular_times.map(time => `${time} (${formatQuantity(medicine.dose_quantities?.[time] ?? 1)})`).join(", ")}`);
         if (medicine.as_required) updatedNotes.push(`when required${medicine.prn_notes ? ` — ${medicine.prn_notes}` : ""}`);
         if (medicine.active_pack_count) updatedNotes.push(`${medicine.active_pack_count} active pack${medicine.active_pack_count === 1 ? "" : "s"}`);
         if (medicine.quantity_in_dosette) updatedNotes.push(`${medicine.quantity_in_dosette} in dosette`);
@@ -736,6 +772,7 @@ function renderMedicine(medicine) {
         if (medicine.medikeep_status && medicine.medikeep_status !== "active") updatedNotes.push(`MediKeep: ${medicine.medikeep_status}`);
         detail.textContent = updatedNotes.join(" · ") || "Scan a pack to start stock tracking.";
         scheduleButton.textContent = "Edit administration plan";
+        editor.hidden = true;
       } catch (error) {
         alert(`Could not save administration plan: ${error.message}`);
         saveSchedule.disabled = false;
@@ -890,7 +927,8 @@ function renderPack(pack, productName) {
   const countInput = document.createElement("input");
   countInput.type = "number";
   countInput.min = "0";
-  countInput.inputMode = "numeric";
+  countInput.step = "0.5";
+  countInput.inputMode = "decimal";
   countInput.value = String(pack.quantity_remaining);
   countInput.setAttribute("aria-label", "Physical count remaining");
   const saveCount = button("Set physical count", "secondary compact");

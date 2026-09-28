@@ -50,6 +50,11 @@ def ensure_schema() -> None:
         dose_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(scheduled_doses)"))}
         if dose_columns and "notified_at" not in dose_columns:
             connection.execute(text("ALTER TABLE scheduled_doses ADD COLUMN notified_at DATETIME"))
+        if dose_columns and "quantity" not in dose_columns:
+            connection.execute(text("ALTER TABLE scheduled_doses ADD COLUMN quantity REAL NOT NULL DEFAULT 1"))
+        schedule_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(medication_schedules)"))}
+        if schedule_columns and "regular_doses" not in schedule_columns:
+            connection.execute(text("ALTER TABLE medication_schedules ADD COLUMN regular_doses TEXT NOT NULL DEFAULT '{}'"))
         event_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(supply_events)"))}
         if event_columns and "actor_name" not in event_columns:
             connection.execute(text("ALTER TABLE supply_events ADD COLUMN actor_name TEXT"))
