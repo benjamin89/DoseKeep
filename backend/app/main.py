@@ -389,6 +389,38 @@ def save_default_common_name(user: User, product_id: int, common_name: str | Non
     session.add(ProductCommonName(user_id=user.id, product_id=product_id, common_name=common_name.strip()))
 
 
+def consolidate_medikeep_products(user: User, session: Session) -> None:
+    """Keep one stable DoseKeep medicine behind each linked MediKeep medicine.
+
+    Earlier versions created a new Product for every barcode, even when the
+    pack was linked to the same MediKeep medicine. Move those records to the
+    original product so its chosen common name remains stable.
+    """
+    links = session.query(MediKeepLink).filter_by(user_id=user.id).order_by(MediKeepLink.product_id).all()
+    by_medication: dict[int, list[MediKeepLink]] = {}
+    for link in links:
+        by_medication.setdefault(link.medikeep_medication_id, []).append(link)
+    changed = False
+    for related_links in by_medication.values():
+        if len(related_links) < 2:
+            continue
+        anchor_id = related_links[0].product_id
+        anchor_schedule = session.query(MedicationSchedule).filter_by(user_id=user.id, product_id=anchor_id).first()
+        for duplicate_link in related_links[1:]:
+            duplicate_id = duplicate_link.product_id
+            session.query(Pack).filter_by(user_id=user.id, product_id=duplicate_id).update({Pack.product_id: anchor_id})
+            duplicate_schedule = session.query(MedicationSchedule).filter_by(user_id=user.id, product_id=duplicate_id).first()
+            if duplicate_schedule and not anchor_schedule:
+                duplicate_schedule.product_id = anchor_id
+                anchor_schedule = duplicate_schedule
+            session.query(ScheduledDose).filter_by(user_id=user.id, product_id=duplicate_id).update({ScheduledDose.product_id: anchor_id})
+            session.query(DeviceToken).filter_by(user_id=user.id, product_id=duplicate_id).update({DeviceToken.product_id: anchor_id})
+            session.delete(duplicate_link)
+            changed = True
+    if changed:
+        session.commit()
+
+
 def migrate_legacy_links(user: User, session: Session) -> None:
     """Carry forward links made before links became user-specific."""
     legacy_products = (
@@ -592,6 +624,7 @@ def list_products(user: User = Depends(current_user), session: Session = Depends
 @app.get("/api/v1/dashboard/medicines", response_model=list[MedicineOverviewRead])
 def list_medicine_dashboard(user: User = Depends(current_user), session: Session = Depends(get_session)):
     """Default user view: medicines first, with packs as supporting detail."""
+    consolidate_medikeep_products(user, session)
     packs = session.query(Pack).filter(accessible_pack_filter(user, session), Pack.status == "active").all()
     product_ids = {pack.product_id for pack in packs}
     products = {item.id: item for item in session.query(Product).filter(Product.id.in_(product_ids)).all()} if product_ids else {}
@@ -1828,11 +1861,32 @@ def create_pack_from_scan(scan: ScannedPackCreate, user: User = Depends(current_
         if scan.medikeep_medication_id not in available_ids:
             raise HTTPException(status_code=422, detail="Selected MediKeep medication was not found")
 
+    consolidate_medikeep_products(user, session)
+
     existing_pack = session.query(Pack).filter(Pack.user_id == user.id, Pack.gtin == gtin, Pack.serial_number == decoded.get("serial_number")).first()
     if existing_pack:
         return {"product": existing_pack.product, "pack": existing_pack, "created": False}
 
-    product = session.query(Product).filter(Product.barcode == gtin).first()
+    product = None
+    if scan.existing_product_id is not None:
+        product = session.get(Product, scan.existing_product_id)
+        owned = product and (
+            session.query(Pack).filter_by(user_id=user.id, product_id=product.id).first()
+            or session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product.id).first()
+        )
+        if not owned:
+            raise HTTPException(status_code=404, detail="Existing DoseKeep medicine was not found")
+        existing_link = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product.id).first()
+        if existing_link and scan.medikeep_medication_id is not None and existing_link.medikeep_medication_id != scan.medikeep_medication_id:
+            raise HTTPException(status_code=422, detail="That existing medicine is linked to a different MediKeep medicine")
+    elif scan.medikeep_medication_id is not None:
+        existing_link = session.query(MediKeepLink).filter_by(
+            user_id=user.id,
+            medikeep_medication_id=scan.medikeep_medication_id,
+        ).first()
+        product = existing_link.product if existing_link else None
+    if not product:
+        product = session.query(Product).filter(Product.barcode == gtin).first()
     if not product:
         product = Product(
             name=catalogue_product.name,

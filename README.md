@@ -43,7 +43,7 @@ On first start DoseKeep creates a stable instance key in the persistent volume. 
 
 ### 1. Add and check packs
 
-Use **Medicines → Scan a medicine pack**, or paste a decoded GS1 code. Confirm the product and pack quantity before saving. DoseKeep records physical stock separately from clinical prescription data.
+Use **Medicines → Scan a medicine pack**, or paste a decoded GS1 code. Confirm the product and pack quantity before saving. DoseKeep records physical stock separately from clinical prescription data. When a new barcode is another brand, strength or pack of a medicine already tracked, select that existing DoseKeep medicine so its editable common name, administration plan and stock history stay together.
 
 Use **Set physical count** if a pack count is wrong. This creates a correction event rather than inventing an administration record. Fractional counts are supported for scored tablets, for example `12.5`.
 

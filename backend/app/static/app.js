@@ -12,6 +12,8 @@ const packsContainer = document.querySelector("#packs");
 const productCategory = document.querySelector("#product-category");
 const medikeepLink = document.querySelector("#medikeep-link");
 const medikeepMedication = document.querySelector("#medikeep-medication");
+const existingMedicineLink = document.querySelector("#existing-medicine-link");
+const existingMedicine = document.querySelector("#existing-medicine");
 const medikeepSection = document.querySelector("#medikeep-section");
 const medikeepMedicines = document.querySelector("#medikeep-medicines");
 const medicinesContainer = document.querySelector("#medicines");
@@ -848,6 +850,36 @@ async function showMediKeepSuggestions(productName) {
   }
 }
 
+async function showExistingMedicineSuggestions() {
+  // Each scan starts as an independent choice. A previous selection must not
+  // silently carry over to the next barcode.
+  existingMedicine.value = "";
+  medikeepMedication.disabled = false;
+  existingMedicine.replaceChildren();
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "Create a new DoseKeep medicine";
+  existingMedicine.append(none);
+  try {
+    const medicines = await api("/api/v1/dashboard/medicines");
+    medicines.filter(medicine => medicine.product_id !== null).forEach(medicine => {
+      const option = document.createElement("option");
+      option.value = String(medicine.product_id);
+      option.textContent = `${medicine.name}${medicine.dosage ? ` — ${medicine.dosage}` : ""}`;
+      existingMedicine.append(option);
+    });
+    existingMedicineLink.hidden = medicines.every(medicine => medicine.product_id === null);
+  } catch {
+    existingMedicineLink.hidden = true;
+  }
+}
+
+existingMedicine.addEventListener("change", () => {
+  const joiningExisting = Boolean(existingMedicine.value);
+  medikeepMedication.disabled = joiningExisting;
+  if (joiningExisting) medikeepMedication.value = "";
+});
+
 function formatEvent(event) {
   const labels = {
     taken_from_pack: "Taken from pack",
@@ -1085,7 +1117,7 @@ async function findProduct(raw) {
     productMatch.innerHTML = `<strong>${match.name}</strong><br>${match.presentation || match.form || "French catalogue match"}${match.common_name ? `<br><small>Common name suggestion: ${match.common_name}</small>` : ""}<br><small>${match.holder || ""}</small>`;
     quantity.value = match.quantity_hint || "";
     productCategory.value = "medicine";
-    await showMediKeepSuggestions(match.name);
+    await Promise.all([showMediKeepSuggestions(match.name), showExistingMedicineSuggestions()]);
     savePack.hidden = false;
   } catch (error) {
     result.textContent = error.message;
@@ -1276,6 +1308,7 @@ document.querySelector("#save").addEventListener("click", async () => {
         quantity_initial: Number(quantity.value),
         category: productCategory.value,
         medikeep_medication_id: medikeepMedication.value ? Number(medikeepMedication.value) : null,
+        existing_product_id: existingMedicine.value ? Number(existingMedicine.value) : null,
       }),
     });
     savedScanProductId = created.product.id;

@@ -82,6 +82,11 @@
           <select id="medikeep-medication"></select>
           <p class="hint">DoseKeep reads MediKeep only; it will not change your clinical record.</p>
         </div>
+        <div id="existing-medicine-link" hidden>
+          <label for="existing-medicine">Add as another pack of an existing DoseKeep medicine (optional)</label>
+          <select id="existing-medicine"></select>
+          <p class="hint">Use this when the barcode is a new brand or pack, but it belongs to the same medicine you already track.</p>
+        </div>
         <label for="quantity">Tablets/items in this pack</label>
         <input id="quantity" type="number" min="1" inputmode="numeric" />
         <button id="save">Save this pack</button>
@@ -218,6 +223,6 @@
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.33.0"></script>
+    <script src="/app.js?v=0.34.0"></script>
   </body>
 </html>

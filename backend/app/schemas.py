@@ -240,6 +240,9 @@ class ScannedPackCreate(BaseModel):
     obtained_on: date | None = None
     category: str = Field(default="medicine", pattern="^(medicine|otc|supplement|other)$")
     medikeep_medication_id: int | None = None
+    # A scanned barcode may be another pack of a medicine already tracked in
+    # DoseKeep, rather than a new medicine in its own right.
+    existing_product_id: int | None = None
     household_id: int | None = None
 
 
