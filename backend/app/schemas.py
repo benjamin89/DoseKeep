@@ -100,7 +100,7 @@ class PackRead(PackCreate):
 
 
 class SupplyEventCreate(BaseModel):
-    event_type: str = Field(pattern="^(dosette_fill|taken|taken_from_pack|skipped|disposed|correction)$")
+    event_type: str = Field(pattern="^(dosette_fill|taken|taken_from_pack|skipped|disposed|removed_from_stock|correction)$")
     quantity: float = Field(gt=0)
     notes: str | None = None
 

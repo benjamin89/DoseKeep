@@ -1906,9 +1906,11 @@ def add_supply_event(pack_id: int, event: SupplyEventCreate, user: User = Depend
         if pack.quantity_remaining < event.quantity:
             raise HTTPException(status_code=409, detail="Insufficient pack stock")
         pack.quantity_remaining -= event.quantity
-    elif event.event_type == "disposed":
+    elif event.event_type in {"disposed", "removed_from_stock"}:
         if pack.quantity_remaining < event.quantity:
             raise HTTPException(status_code=409, detail="Insufficient pack stock")
+        if event.event_type == "removed_from_stock" and not (event.notes or "").strip():
+            raise HTTPException(status_code=422, detail="Give a reason for removing stock")
         pack.quantity_remaining -= event.quantity
     record = SupplyEvent(pack_id=pack_id, **event.model_dump())
     session.add(record)

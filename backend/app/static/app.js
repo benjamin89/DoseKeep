@@ -855,6 +855,7 @@ function formatEvent(event) {
     dosette_fill: "Moved to dosette",
     skipped: "Skipped",
     disposed: "Disposed",
+    removed_from_stock: "Removed from stock",
     correction: "Physical count corrected",
   };
   const when = utcDate(event.occurred_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
@@ -922,6 +923,11 @@ function renderPack(pack, productName) {
   caption.textContent = `tablets/items physically in pack · original pack: ${pack.quantity_initial}`;
   card.append(caption);
 
+  const correctionLabel = document.createElement("p");
+  correctionLabel.className = "hint";
+  correctionLabel.textContent = "Physical count correction";
+  card.append(correctionLabel);
+
   const stockRow = document.createElement("div");
   stockRow.className = "stock-row";
   const countInput = document.createElement("input");
@@ -929,16 +935,22 @@ function renderPack(pack, productName) {
   countInput.min = "0";
   countInput.step = "0.5";
   countInput.inputMode = "decimal";
-  countInput.value = String(pack.quantity_remaining);
-  countInput.setAttribute("aria-label", "Physical count remaining");
-  const saveCount = button("Set physical count", "secondary compact");
+  countInput.placeholder = "Actual count";
+  countInput.setAttribute("aria-label", "Actual physical count");
+  const saveCount = button("Correct stock", "secondary compact");
   saveCount.addEventListener("click", async () => {
+    const enteredCount = countInput.value.trim();
+    const actualCount = Number(enteredCount);
+    if (!enteredCount || !Number.isFinite(actualCount) || actualCount < 0) {
+      alert("Enter the actual number of tablets/items in the pack.");
+      return;
+    }
     saveCount.disabled = true;
     try {
       await api(`/api/v1/packs/${pack.id}/stock`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ quantity_remaining: Number(countInput.value) }),
+        body: JSON.stringify({ quantity_remaining: actualCount }),
       });
       await Promise.all([loadPacks(), loadMedicines()]);
     } catch (error) {
@@ -949,28 +961,84 @@ function renderPack(pack, productName) {
   stockRow.append(countInput, saveCount);
   card.append(stockRow);
 
-  const actions = document.createElement("div");
-  actions.className = "dose-actions";
-  const taken = button("Taken from pack");
-  const skipped = button("Skipped dose", "outline");
-  async function record(eventType, control) {
-    control.disabled = true;
+  const removalLabel = document.createElement("p");
+  removalLabel.className = "hint";
+  removalLabel.textContent = "Remove stock that was not administered";
+  card.append(removalLabel);
+
+  const removalRow = document.createElement("div");
+  removalRow.className = "stock-row";
+  const removalQuantity = document.createElement("input");
+  removalQuantity.type = "number";
+  removalQuantity.min = "0.5";
+  removalQuantity.step = "0.5";
+  removalQuantity.inputMode = "decimal";
+  removalQuantity.value = "1";
+  removalQuantity.setAttribute("aria-label", "Quantity to remove from stock");
+  removalRow.append(removalQuantity);
+  card.append(removalRow);
+
+  const removalReason = document.createElement("select");
+  removalReason.setAttribute("aria-label", "Reason for removing stock");
+  [
+    ["", "Select a reason"],
+    ["Returned to pharmacy", "Returned to pharmacy"],
+    ["Damaged", "Damaged"],
+    ["Disposed", "Disposed"],
+    ["Given away", "Given away"],
+    ["Other", "Other"],
+  ].forEach(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    removalReason.append(option);
+  });
+  card.append(removalReason);
+
+  const removalComments = document.createElement("textarea");
+  removalComments.rows = 2;
+  removalComments.maxLength = 500;
+  removalComments.placeholder = "Comments (required for Other)";
+  removalComments.setAttribute("aria-label", "Removal comments");
+  card.append(removalComments);
+
+  const removeStock = button("Remove from stock", "outline");
+  removeStock.addEventListener("click", async () => {
+    const quantity = Number(removalQuantity.value);
+    const reason = removalReason.value;
+    const comments = removalComments.value.trim();
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      alert("Enter a quantity to remove.");
+      return;
+    }
+    if (!reason) {
+      alert("Give a reason for removing stock.");
+      removalReason.focus();
+      return;
+    }
+    if (reason === "Other" && !comments) {
+      alert("Add comments when selecting Other.");
+      removalComments.focus();
+      return;
+    }
+    removeStock.disabled = true;
     try {
       await api(`/api/v1/packs/${pack.id}/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ event_type: eventType, quantity: 1 }),
+        body: JSON.stringify({
+          event_type: "removed_from_stock",
+          quantity,
+          notes: comments ? `${reason}: ${comments}` : reason,
+        }),
       });
       await Promise.all([loadPacks(), loadMedicines()]);
     } catch (error) {
-      alert(`Could not record this: ${error.message}`);
-      control.disabled = false;
+      alert(`Could not remove stock: ${error.message}`);
+      removeStock.disabled = false;
     }
-  }
-  taken.addEventListener("click", () => record("taken_from_pack", taken));
-  skipped.addEventListener("click", () => record("skipped", skipped));
-  actions.append(taken, skipped);
-  card.append(actions);
+  });
+  card.append(removeStock);
 
   const recent = document.createElement("ul");
   recent.className = "recent-events";
