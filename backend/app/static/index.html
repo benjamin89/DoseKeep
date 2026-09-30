@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#14532d" />
     <link rel="manifest" href="/manifest.webmanifest?v=0.29.0" />
-    <link rel="stylesheet" href="/styles.css?v=0.30.0" />
+    <link rel="stylesheet" href="/styles.css?v=0.33.0" />
     <title>DoseKeep</title>
   </head>
   <body>
@@ -126,6 +126,33 @@
           </div>
           <button id="refresh-administration" type="button" class="secondary compact">Refresh</button>
         </div>
+        <section class="pill-box-panel" aria-labelledby="pill-box-heading">
+          <h3 id="pill-box-heading">Prepare pill box</h3>
+          <p>Reserve regular doses from packs without recording them as taken. Re-run this later to top up any doses that were short of stock.</p>
+          <div class="pill-box-controls">
+            <label>Start date <input id="pill-box-start" type="date" /></label>
+            <label>Cover <input id="pill-box-days" type="number" min="1" max="28" value="7" inputmode="numeric" /> calendar days</label>
+          </div>
+          <fieldset id="pill-box-weekdays"><legend>Prepare on</legend>
+            <label><input type="checkbox" value="0" checked /> Mon</label><label><input type="checkbox" value="1" checked /> Tue</label><label><input type="checkbox" value="2" checked /> Wed</label><label><input type="checkbox" value="3" checked /> Thu</label><label><input type="checkbox" value="4" checked /> Fri</label><label><input type="checkbox" value="5" checked /> Sat</label><label><input type="checkbox" value="6" checked /> Sun</label>
+          </fieldset>
+          <fieldset id="pill-box-slots"><legend>Administration times</legend>
+            <label><input type="checkbox" value="morning" checked /> Morning</label><label><input type="checkbox" value="midday" checked /> Midday</label><label><input type="checkbox" value="evening" checked /> Evening</label><label><input type="checkbox" value="bedtime" checked /> Bedtime</label>
+          </fieldset>
+          <button id="prepare-pill-box" type="button" class="secondary">Prepare selected doses</button>
+          <p id="pill-box-result" class="hint" aria-live="polite"></p>
+          <details class="pill-box-routine">
+            <summary>Save as a weekly pill-box routine</summary>
+            <p>Uses your ntfy reminder settings. Preparation still needs your confirmation. The stock check forecasts enough supply for this and the next box.</p>
+            <label class="schedule-option"><input id="pill-box-routine-enabled" type="checkbox" /> Send routine reminders</label>
+            <div class="pill-box-controls">
+              <label>Top-up day <select id="pill-box-topup-weekday"><option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option><option value="6" selected>Sunday</option></select></label>
+              <label>Stock-check day <select id="pill-box-stockcheck-weekday"><option value="0">Monday</option><option value="1" selected>Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option></select></label>
+            </div>
+            <button id="save-pill-box-routine" type="button" class="secondary compact">Save weekly routine</button>
+            <p id="pill-box-routine-result" class="hint" aria-live="polite"></p>
+          </details>
+        </section>
         <div id="administration" aria-live="polite">Loading administration plan…</div>
       </section>
       <section id="page-report" class="app-page" hidden>
@@ -223,6 +250,6 @@
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.34.0"></script>
+    <script src="/app.js?v=0.37.0"></script>
   </body>
 </html>

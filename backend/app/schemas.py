@@ -10,6 +10,7 @@ class ProductCreate(BaseModel):
     category: str = "medicine"
     barcode: str | None = None
     catalogue_source: str | None = None
+    leaflet_url: str | None = Field(default=None, max_length=1000)
     medikeep_medication_id: int | None = None
     notes: str | None = None
 
@@ -146,6 +147,7 @@ class CatalogueProductRead(BaseModel):
     holder: str | None = None
     presentation: str | None = None
     quantity_hint: int | None = None
+    leaflet_url: str | None = None
     source: str
 
 
@@ -153,6 +155,7 @@ class MediKeepMedicationRead(BaseModel):
     id: int
     name: str
     dosage: str | None = None
+    leaflet_url: str | None = None
     route: str | None = None
     frequency: str | None = None
     status: str
@@ -219,6 +222,7 @@ class ScheduledDoseRead(BaseModel):
     due_at: datetime
     status: str
     quantity: float = 1
+    prepared_at: datetime | None = None
     actioned_at: datetime | None = None
     notes: str | None = None
     stock_available: float = 0
@@ -228,6 +232,59 @@ class ScheduledDoseAction(BaseModel):
     action: str = Field(pattern="^(taken|skipped|snooze)$")
     snooze_minutes: int = Field(default=15, ge=5, le=240)
     notes: str | None = Field(default=None, max_length=500)
+
+
+class PillBoxPrepareRequest(BaseModel):
+    """Reserve selected regular doses into a physical pill box."""
+
+    start_date: date
+    days: int = Field(default=7, ge=1, le=28)
+    weekdays: list[int] = Field(default_factory=lambda: list(range(7)))
+    slots: list[str] = Field(default_factory=lambda: ["morning", "midday", "evening", "bedtime"])
+
+    def validate_selection(self) -> None:
+        if not self.weekdays or any(day < 0 or day > 6 for day in self.weekdays):
+            raise ValueError("Choose at least one day of the week")
+        allowed = {"morning", "midday", "evening", "bedtime"}
+        if not self.slots or any(slot not in allowed for slot in self.slots):
+            raise ValueError("Choose at least one administration time")
+
+
+class PillBoxPrepareResult(BaseModel):
+    prepared_count: int
+    prepared_quantity: float
+    unavailable: list[str] = []
+
+
+class PillBoxRoutineSettings(BaseModel):
+    """A repeatable reminder/check routine; preparation remains intentional."""
+
+    enabled: bool = False
+    top_up_weekday: int = Field(default=6, ge=0, le=6)  # Monday=0; Sunday=6
+    stock_check_weekday: int = Field(default=1, ge=0, le=6)  # Tuesday by default
+    days: int = Field(default=7, ge=1, le=28)
+    weekdays: list[int] = Field(default_factory=lambda: list(range(7)))
+    slots: list[str] = Field(default_factory=lambda: ["morning", "midday", "evening", "bedtime"])
+
+    def validate_selection(self) -> None:
+        if not self.weekdays or any(day < 0 or day > 6 for day in self.weekdays):
+            raise ValueError("Choose at least one preparation day")
+        allowed = {"morning", "midday", "evening", "bedtime"}
+        if not self.slots or any(slot not in allowed for slot in self.slots):
+            raise ValueError("Choose at least one administration time")
+
+
+class PillBoxTakeRequest(BaseModel):
+    dose_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+class PillBoxTakeResult(BaseModel):
+    taken_count: int
+
+
+class PreparedDoseResolution(BaseModel):
+    action: str = Field(pattern="^(return_to_pack|dispose)$")
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class PRNDoseCreate(BaseModel):

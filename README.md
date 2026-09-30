@@ -43,9 +43,15 @@ On first start DoseKeep creates a stable instance key in the persistent volume. 
 
 ### 1. Add and check packs
 
-Use **Medicines → Scan a medicine pack**, or paste a decoded GS1 code. Confirm the product and pack quantity before saving. DoseKeep records physical stock separately from clinical prescription data. When a new barcode is another brand, strength or pack of a medicine already tracked, select that existing DoseKeep medicine so its editable common name, administration plan and stock history stay together.
+Use **Medicines → Scan a medicine pack**, or paste a decoded GS1 code. Confirm the product and pack quantity before saving. DoseKeep records physical stock separately from clinical prescription data. For French BDPM matches, DoseKeep links to the official public product information page and patient leaflet where published. When a new barcode is another brand, strength or pack of a medicine already tracked, select that existing DoseKeep medicine so its editable common name, administration plan and stock history stay together.
 
 Use **Set physical count** if a pack count is wrong. This creates a correction event rather than inventing an administration record. Fractional counts are supported for scored tablets, for example `12.5`.
+
+### Pill box preparation
+
+From the **Medication administration record**, choose a start date, the calendar days and administration times to prepare. DoseKeep moves available units from packs into a **prepared pill-box** count, but does not mark them taken. If stock is short, it prepares what it can and reports the remaining doses; after adding a pack, run the same selection again to top up only the outstanding doses. At the scheduled time, prepared doses retain the usual reminder flow and can be recorded together for one administration slot.
+
+Optionally save this as a weekly routine. DoseKeep can remind you on the chosen top-up day and run a second weekly stock check that forecasts enough supply for the current and following pill box. These prompts use your private ntfy settings and never prepare doses automatically.
 
 ### 2. Set an administration plan
 

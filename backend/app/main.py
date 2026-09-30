@@ -31,7 +31,7 @@ from .catalogue import lookup_french_gtin
 from .database import Base, SessionLocal, engine, ensure_schema, get_session
 from .gs1 import parse_medicine_code
 from .medikeep import MediKeepUnavailable, active_medications, all_medications, create_medication, normalize_name, suggested_medications
-from .models import CabinetGuestLink, DeviceToken, Household, HouseholdInvite, HouseholdMembership, MediKeepConnection, MediKeepLink, MedicationSchedule, NotificationActionLink, Pack, Product, ProductCommonName, ScheduledDose, SupplyEvent, User
+from .models import CabinetGuestLink, DeviceToken, Household, HouseholdInvite, HouseholdMembership, MediKeepConnection, MediKeepLink, MedicationSchedule, NotificationActionLink, Pack, PillBoxAllocation, Product, ProductCommonName, ScheduledDose, SupplyEvent, User
 from .notifications import send_ntfy
 from .schemas import (
     AdministrationTimeSettings,
@@ -60,6 +60,12 @@ from .schemas import (
     PackCreate,
     PackHouseholdUpdate,
     PackRead,
+    PillBoxPrepareRequest,
+    PillBoxPrepareResult,
+    PillBoxRoutineSettings,
+    PillBoxTakeRequest,
+    PillBoxTakeResult,
+    PreparedDoseResolution,
     ProductCreate,
     ProductRead,
     ScannedPackCreate,
@@ -292,6 +298,49 @@ def notification_settings(user: User) -> dict:
     except (TypeError, ValueError):
         configured = {}
     return {**DEFAULT_NOTIFICATION_SETTINGS, **configured}
+
+
+DEFAULT_PILL_BOX_SETTINGS = {
+    "enabled": False,
+    "top_up_weekday": 6,
+    "stock_check_weekday": 1,
+    "days": 7,
+    "weekdays": list(range(7)),
+    "slots": ["morning", "midday", "evening", "bedtime"],
+}
+
+
+def pill_box_settings(user: User) -> dict:
+    try:
+        configured = json.loads(user.pill_box_settings or "{}")
+    except (TypeError, ValueError):
+        configured = {}
+    return {**DEFAULT_PILL_BOX_SETTINGS, **configured}
+
+
+@app.get("/api/v1/settings/pill-box", response_model=PillBoxRoutineSettings)
+def get_pill_box_settings(user: User = Depends(current_user)):
+    return pill_box_settings(user)
+
+
+@app.put("/api/v1/settings/pill-box", response_model=PillBoxRoutineSettings)
+def update_pill_box_settings(
+    payload: PillBoxRoutineSettings,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    try:
+        payload.validate_selection()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    notifications = notification_settings(user)
+    if payload.enabled and (not notifications["enabled"] or not notifications["topic"]):
+        raise HTTPException(status_code=422, detail="Enable ntfy medication reminders and set a topic before enabling a pill-box routine")
+    # Changing the routine deliberately clears prior reminder dates so the
+    # next applicable top-up/check is not suppressed by stale state.
+    user.pill_box_settings = json.dumps(payload.model_dump())
+    session.commit()
+    return pill_box_settings(user)
 
 
 @app.get("/api/v1/settings/administration-times", response_model=AdministrationTimeSettings)
@@ -672,6 +721,7 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
             "name": common_names.get(product_id) or (external.name if external else product.name),
             "common_name": common_names.get(product_id),
             "dosage": external.dosage if external else product.strength,
+            "leaflet_url": product.leaflet_url,
             "route": external.route if external else None,
             "frequency": external.frequency if external else None,
             "quantity_remaining": sum(pack.quantity_remaining for pack in matching_packs),
@@ -697,6 +747,7 @@ def list_medicine_dashboard(user: User = Depends(current_user), session: Session
                 "name": medication.name,
                 "common_name": None,
                 "dosage": medication.dosage,
+                "leaflet_url": None,
                 "route": medication.route,
                 "frequency": medication.frequency,
                 "quantity_remaining": 0,
@@ -1215,6 +1266,52 @@ def generate_today_doses(user: User, session: Session) -> None:
         session.commit()
 
 
+def generate_regular_doses_for_date(user: User, session: Session, local_date: date) -> None:
+    """Materialise a future day's regular plan so it can be put in a pill box.
+
+    Unlike the daily generator this deliberately does not rewrite a future
+    record after a plan edit: once someone has physically prepared a dose, its
+    time and quantity are an audit snapshot.
+    """
+    zone = user_zone(user)
+    all_by_id = {}
+    try:
+        all_by_id = {item.id: item for item in all_medications(user_medikeep_config(user, session))}
+    except (MediKeepUnavailable, HTTPException):
+        pass
+    links = {item.product_id: item for item in session.query(MediKeepLink).filter_by(user_id=user.id).all()}
+    slot_times = administration_times(user)
+    seen_medikeep_ids = set()
+    created = False
+    for schedule in session.query(MedicationSchedule).filter_by(user_id=user.id).all():
+        link = links.get(schedule.product_id)
+        if link:
+            if link.medikeep_medication_id in seen_medikeep_ids:
+                continue
+            seen_medikeep_ids.add(link.medikeep_medication_id)
+            external = all_by_id.get(link.medikeep_medication_id)
+            if external and external.status != "active":
+                continue
+        for slot, quantity in schedule_dose_quantities(schedule).items():
+            configured_time = slot_times.get(slot)
+            if not configured_time:
+                continue
+            due = datetime.combine(local_date, time.fromisoformat(configured_time), tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+            exists = session.query(ScheduledDose).filter_by(
+                user_id=user.id, product_id=schedule.product_id,
+                administration_time=slot, scheduled_for=due,
+            ).first()
+            if not exists:
+                session.add(ScheduledDose(
+                    user_id=user.id, product_id=schedule.product_id,
+                    administration_time=slot, scheduled_for=due,
+                    due_at=due, quantity=quantity,
+                ))
+                created = True
+    if created:
+        session.flush()
+
+
 def medication_display_names(user: User, session: Session) -> dict[int, str]:
     """Return preferred common names, with MediKeep and pack-name fallbacks.
 
@@ -1249,6 +1346,7 @@ def dose_read(dose: ScheduledDose, session: Session, display_names: dict[int, st
         "due_at": dose.due_at,
         "status": dose.status,
         "quantity": dose.quantity,
+        "prepared_at": dose.prepared_at,
         "actioned_at": dose.actioned_at,
         "notes": dose.notes,
         "stock_available": stock,
@@ -1273,6 +1371,96 @@ def notification_action_url(user: User, doses: list[ScheduledDose], now: datetim
     return f"{os.getenv('DOSEKEEP_PUBLIC_URL', 'https://dosekeep.godsil.co.uk').rstrip('/')}/dose-actions/{token}"
 
 
+WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def pill_box_cycle_requirements(user: User, settings: dict, cycle_start: date, session: Session) -> dict[int, float]:
+    """Units needed for one configured box cycle, grouped by medicine."""
+    selected_dates = [
+        cycle_start + timedelta(days=offset)
+        for offset in range(settings["days"])
+        if (cycle_start + timedelta(days=offset)).weekday() in set(settings["weekdays"])
+    ]
+    selected_slots = set(settings["slots"])
+    links = {item.product_id: item for item in session.query(MediKeepLink).filter_by(user_id=user.id).all()}
+    all_by_id = {}
+    try:
+        all_by_id = {item.id: item for item in all_medications(user_medikeep_config(user, session))}
+    except (MediKeepUnavailable, HTTPException):
+        pass
+    seen_medikeep_ids = set()
+    requirements: dict[int, float] = {}
+    for schedule in session.query(MedicationSchedule).filter_by(user_id=user.id).all():
+        link = links.get(schedule.product_id)
+        if link:
+            if link.medikeep_medication_id in seen_medikeep_ids:
+                continue
+            seen_medikeep_ids.add(link.medikeep_medication_id)
+            external = all_by_id.get(link.medikeep_medication_id)
+            if external and external.status != "active":
+                continue
+        daily = sum(quantity for slot, quantity in schedule_dose_quantities(schedule).items() if slot in selected_slots)
+        if daily:
+            requirements[schedule.product_id] = daily * len(selected_dates)
+    return requirements
+
+
+def process_pill_box_routine(user: User, settings: dict, now: datetime, session: Session) -> bool:
+    """Send one weekly top-up prompt and one configurable two-box stock check."""
+    routine = pill_box_settings(user)
+    if not routine["enabled"]:
+        return False
+    zone = user_zone(user)
+    today = now.replace(tzinfo=timezone.utc).astimezone(zone).date()
+    today_key = today.isoformat()
+    changed = False
+    public_url = os.getenv("DOSEKEEP_PUBLIC_URL", "https://dosekeep.godsil.co.uk").rstrip("/") + "/#administration"
+    raw = dict(routine)
+    if today.weekday() == routine["top_up_weekday"] and raw.get("top_up_notified_for") != today_key:
+        title = "DoseKeep: pill-box top-up due"
+        message = f"Prepare your {routine['days']}-day pill box for {WEEKDAY_NAMES[routine['top_up_weekday']]} onward."
+        try:
+            send_ntfy(settings["server_url"], settings["topic"], title, message, "pill,calendar", public_url)
+        except Exception as error:
+            print(f"ntfy pill-box top-up reminder failed for user {user.id}: {error}")
+        else:
+            raw["top_up_notified_for"] = today_key
+            changed = True
+    if today.weekday() == routine["stock_check_weekday"] and raw.get("stock_check_notified_for") != today_key:
+        days_until_topup = (routine["top_up_weekday"] - today.weekday()) % 7
+        next_topup = today + timedelta(days=days_until_topup)
+        first = pill_box_cycle_requirements(user, routine, next_topup, session)
+        second = pill_box_cycle_requirements(user, routine, next_topup + timedelta(days=routine["days"]), session)
+        names = medication_display_names(user, session)
+        warnings = []
+        for product_id in set(first) | set(second):
+            target = first.get(product_id, 0) + second.get(product_id, 0)
+            available = sum(
+                pack.quantity_remaining + pack.quantity_in_dosette
+                for pack in session.query(Pack).filter(accessible_pack_filter(user, session), Pack.product_id.in_(related_product_ids(user, product_id, session)), Pack.status == "active").all()
+            )
+            if available + 1e-9 < target:
+                product = session.get(Product, product_id)
+                medicine = names.get(product_id) or (product.name if product else "Medicine")
+                warnings.append(f"{medicine}: {available:g} available; {target:g} needed for this and next box — add at least {target - available:g}")
+        if warnings:
+            try:
+                send_ntfy(settings["server_url"], settings["topic"], "DoseKeep: pill-box stock warning", " · ".join(warnings), "warning,pill", public_url)
+            except Exception as error:
+                print(f"ntfy pill-box stock warning failed for user {user.id}: {error}")
+            else:
+                raw["stock_check_notified_for"] = today_key
+                changed = True
+        else:
+            # Mark a clear weekly check as done too; otherwise the worker
+            # would recalculate it every minute.
+            raw["stock_check_notified_for"] = today_key
+            changed = True
+    if changed:
+        user.pill_box_settings = json.dumps(raw)
+    return changed
+
+
 def process_due_notifications(session: Session) -> None:
     """Generate due doses and send each configured ntfy reminder once."""
     now = datetime.utcnow()
@@ -1281,6 +1469,7 @@ def process_due_notifications(session: Session) -> None:
         settings = notification_settings(user)
         if not settings["enabled"] or not settings["topic"]:
             continue
+        changed = process_pill_box_routine(user, settings, now, session) or changed
         generate_today_doses(user, session)
         display_names = medication_display_names(user, session)
         zone = user_zone(user)
@@ -1290,7 +1479,7 @@ def process_due_notifications(session: Session) -> None:
             session.query(ScheduledDose)
             .filter(
                 ScheduledDose.user_id == user.id,
-                ScheduledDose.status.in_(("due", "snoozed")),
+                ScheduledDose.status.in_(("due", "snoozed", "prepared")),
                 ScheduledDose.scheduled_for >= day_start,
                 ScheduledDose.due_at <= now,
                 ScheduledDose.notified_at.is_(None),
@@ -1320,13 +1509,18 @@ def process_due_notifications(session: Session) -> None:
                 else:
                     details.append(f"{medicine} ({dose.quantity:g} item{'s' if dose.quantity != 1 else ''}; {stock:g} available)")
             slot = administration_time.title()
-            if has_no_stock:
+            prepared_count = sum(1 for dose in doses if dose.prepared_at)
+            if prepared_count == len(doses):
+                title = f"DoseKeep: prepared {slot} pill box due"
+                tags = "pill,calendar"
+            elif has_no_stock:
                 title = f"DoseKeep: {slot} medicines due — stock warning"
                 tags = "warning,pill"
             else:
                 title = f"DoseKeep: {slot} medicines due"
                 tags = "pill"
-            message = f"{' · '.join(details)} — open this notification to record it."
+            prepared_note = f" {prepared_count} dose{'s' if prepared_count != 1 else ''} prepared in your pill box." if prepared_count else ""
+            message = f"{' · '.join(details)}.{prepared_note} Open this notification to record it."
             action_url = notification_action_url(user, doses, now, session)
             try:
                 send_ntfy(settings["server_url"], settings["topic"], title, message, tags, action_url)
@@ -1399,8 +1593,49 @@ def consume_stock(user: User, product_id: int, quantity: float, session: Session
             break
 
 
+def fill_pill_box(user: User, dose: ScheduledDose, session: Session, notes: str) -> None:
+    """Move units from packs into the physical pill-box allocation."""
+    packs = stock_packs(user, dose.product_id, session)
+    if sum(pack.quantity_remaining for pack in packs) + 1e-9 < dose.quantity:
+        raise HTTPException(status_code=409, detail="No recorded pack has enough stock to prepare this dose")
+    remaining = dose.quantity
+    for pack in packs:
+        moved = min(pack.quantity_remaining, remaining)
+        if moved <= 0:
+            continue
+        pack.quantity_remaining = round(pack.quantity_remaining - moved, 6)
+        pack.quantity_in_dosette = round(pack.quantity_in_dosette + moved, 6)
+        session.add(SupplyEvent(pack_id=pack.id, event_type="dosette_fill", quantity=moved, notes=notes))
+        session.add(PillBoxAllocation(dose_id=dose.id, pack_id=pack.id, quantity=moved))
+        remaining = round(remaining - moved, 6)
+        if remaining <= 1e-9:
+            break
+
+
+def prepared_allocations(dose: ScheduledDose, session: Session) -> list[PillBoxAllocation]:
+    return session.query(PillBoxAllocation).filter_by(dose_id=dose.id, status="prepared").order_by(PillBoxAllocation.id).all()
+
+
+def consume_pill_box(dose: ScheduledDose, session: Session, notes: str) -> None:
+    """Record a prepared dose as taken, using the physical pill-box stock."""
+    allocations = prepared_allocations(dose, session)
+    if sum(item.quantity for item in allocations) + 1e-9 < dose.quantity:
+        raise HTTPException(status_code=409, detail="The prepared pill-box count is too low for this dose; correct the physical count first")
+    for allocation in allocations:
+        pack = session.get(Pack, allocation.pack_id)
+        if not pack or pack.quantity_in_dosette + 1e-9 < allocation.quantity:
+            raise HTTPException(status_code=409, detail="The prepared pill-box count is too low for this dose; correct the physical count first")
+        pack.quantity_in_dosette = round(pack.quantity_in_dosette - allocation.quantity, 6)
+        allocation.status = "taken"
+        allocation.resolved_at = datetime.utcnow()
+        session.add(SupplyEvent(pack_id=pack.id, event_type="taken", quantity=allocation.quantity, notes=notes))
+
+
 def record_taken_dose(dose: ScheduledDose, user: User, session: Session, now: datetime, notes: str | None = None) -> None:
-    consume_stock(user, dose.product_id, dose.quantity, session, notes or f"Scheduled {dose.administration_time} dose")
+    if dose.prepared_at:
+        consume_pill_box(dose, session, notes or f"Prepared {dose.administration_time} dose")
+    else:
+        consume_stock(user, dose.product_id, dose.quantity, session, notes or f"Scheduled {dose.administration_time} dose")
     dose.status = "taken"
     dose.actioned_at = now
     dose.notes = notes
@@ -1421,6 +1656,99 @@ def list_today_doses(user: User = Depends(current_user), session: Session = Depe
     )
     display_names = medication_display_names(user, session)
     return [dose_read(dose, session, display_names) for dose in doses]
+
+
+@app.post("/api/v1/pill-box/prepare", response_model=PillBoxPrepareResult)
+def prepare_pill_box(
+    payload: PillBoxPrepareRequest,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    """Prepare selected regular doses, stopping only where a dose lacks stock.
+
+    Re-running the same selection is intentionally a safe top-up: already
+    prepared doses are skipped and only the newly available ones are moved.
+    """
+    payload.validate_selection()
+    selected_days = [
+        payload.start_date + timedelta(days=offset)
+        for offset in range(payload.days)
+        if (payload.start_date + timedelta(days=offset)).weekday() in set(payload.weekdays)
+    ]
+    if not selected_days:
+        raise HTTPException(status_code=422, detail="No preparation days fall within this range")
+    for target in selected_days:
+        generate_regular_doses_for_date(user, session, target)
+    zone = user_zone(user)
+    start = datetime.combine(min(selected_days), time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+    end = datetime.combine(max(selected_days) + timedelta(days=1), time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+    doses = (
+        session.query(ScheduledDose)
+        .filter(
+            ScheduledDose.user_id == user.id,
+            ScheduledDose.scheduled_for >= start,
+            ScheduledDose.scheduled_for < end,
+            ScheduledDose.scheduled_for >= datetime.utcnow(),
+            ScheduledDose.administration_time.in_(payload.slots),
+            ScheduledDose.status == "due",
+            ScheduledDose.prepared_at.is_(None),
+        )
+        .order_by(ScheduledDose.scheduled_for, ScheduledDose.due_at, ScheduledDose.id)
+        .all()
+    )
+    names = medication_display_names(user, session)
+    prepared_count = 0
+    prepared_quantity = 0.0
+    unavailable = []
+    for dose in doses:
+        try:
+            local_when = dose.scheduled_for.replace(tzinfo=timezone.utc).astimezone(zone).strftime("%a %-d %b %H:%M")
+            fill_pill_box(user, dose, session, f"Prepared for {local_when}")
+            dose.prepared_at = datetime.utcnow()
+            prepared_count += 1
+            prepared_quantity += dose.quantity
+        except HTTPException as error:
+            product = session.get(Product, dose.product_id)
+            medicine = names.get(dose.product_id) or (product.name if product else "Medicine")
+            unavailable.append(f"{medicine} · {local_when}: {error.detail}")
+    session.commit()
+    return {
+        "prepared_count": prepared_count,
+        "prepared_quantity": prepared_quantity,
+        "unavailable": unavailable,
+    }
+
+
+@app.post("/api/v1/pill-box/take", response_model=PillBoxTakeResult)
+def take_prepared_doses(
+    payload: PillBoxTakeRequest,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    """Confirm a selected same-slot group of physically prepared doses."""
+    doses = (
+        session.query(ScheduledDose)
+        .filter(ScheduledDose.user_id == user.id, ScheduledDose.id.in_(payload.dose_ids))
+        .order_by(ScheduledDose.due_at, ScheduledDose.id)
+        .all()
+    )
+    if len(doses) != len(set(payload.dose_ids)) or not all(dose.prepared_at for dose in doses):
+        raise HTTPException(status_code=422, detail="Choose only prepared doses from your pill box")
+    if len({dose.administration_time for dose in doses}) != 1:
+        raise HTTPException(status_code=422, detail="Prepared doses must be from one administration time")
+    take_prepared_dose_group(doses, user, session)
+    return {"taken_count": len(doses)}
+
+
+def take_prepared_dose_group(doses: list[ScheduledDose], user: User, session: Session) -> None:
+    """Atomically record a prepared same-slot group as taken."""
+    try:
+        for dose in doses:
+            apply_scheduled_dose_action(dose, user, ScheduledDoseAction(action="taken"), session)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
 
 def build_compliance_report(user: User, session: Session, days: int = 7) -> dict:
@@ -1633,22 +1961,28 @@ def reminder_action_page(token: str, session: Session = Depends(get_session)):
     zone = user_zone(user)
     cards = []
     for dose in reminder_doses(record, session):
-        if dose.status not in {"due", "snoozed"}:
+        if dose.status not in {"due", "snoozed", "prepared"}:
             continue
         due = dose.due_at.replace(tzinfo=timezone.utc).astimezone(zone).strftime("%H:%M")
         medicine = html.escape(names.get(dose.product_id) or (session.get(Product, dose.product_id).name if session.get(Product, dose.product_id) else "Medicine"))
+        prepared_label = "prepared in pill box · " if dose.prepared_at else ""
         cards.append(
-            f'<section><h2>{medicine}</h2><p>{html.escape(dose.administration_time.title())} · {dose.quantity:g} item{'s' if dose.quantity != 1 else ''} · due {due}</p>'
+            f'<section><h2>{medicine}</h2><p>{html.escape(dose.administration_time.title())} · {dose.quantity:g} item{'s' if dose.quantity != 1 else ''} · {prepared_label}due {due}</p>'
             f'<div class="actions" data-dose-id="{dose.id}"><button data-action="skipped" class="skip">Skip</button>'
             '<button data-action="taken" class="taken">Taken</button><button data-action="snooze">Snooze 15 min</button></div></section>'
         )
     expiry = record.expires_at.replace(tzinfo=timezone.utc).astimezone(zone).strftime("%H:%M")
+    prepared_pending = [dose for dose in reminder_doses(record, session) if dose.prepared_at and dose.status in {"due", "snoozed", "prepared"}]
+    batch_control = ""
+    if len(prepared_pending) > 1 and len({dose.administration_time for dose in prepared_pending}) == 1:
+        dose_ids = html.escape(json.dumps([dose.id for dose in prepared_pending]), quote=True)
+        batch_control = f'<button id="take-prepared" data-dose-ids="{dose_ids}">Record all prepared doses as taken</button>'
     body = "".join(cards) or "<p>All doses on this reminder have already been recorded.</p>"
     return HTMLResponse(
         f"""<!doctype html><html lang=\"en\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>DoseKeep reminder</title>
 <style>body{{font-family:system-ui,sans-serif;background:#f7f8f4;color:#173222;margin:0;padding:1.25rem;max-width:38rem}}section{{background:#fff;padding:1.1rem;margin:1rem 0;border-radius:1rem;box-shadow:0 1px 3px #0002}}h1,h2{{margin:.1rem 0 .5rem}}p{{color:#475569}}.actions{{display:grid;gap:.55rem}}button{{border:0;border-radius:.55rem;padding:.85rem;font:inherit;font-weight:700;background:#475569;color:#fff}}button.taken{{background:#166534;padding:1rem;font-size:1.05rem}}button.skip{{background:#fff;color:#334155;border:1px solid #94a3b8}}#result{{font-weight:700}}</style>
-<h1>DoseKeep</h1><p>Record this reminder without signing in. This secure link expires at {expiry}.</p>{body}<p id=\"result\"></p>
-<script>document.querySelectorAll('.actions button').forEach(button => button.addEventListener('click', async () => {{
+<h1>DoseKeep</h1><p>Record this reminder without signing in. This secure link expires at {expiry}.</p>{batch_control}{body}<p id=\"result\"></p>
+<script>const bulk=document.querySelector('#take-prepared'); if(bulk) bulk.addEventListener('click',async()=>{{ bulk.disabled=true; const result=document.querySelector('#result'); try {{ const response=await fetch(location.pathname,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{action:'take_prepared',dose_ids:JSON.parse(bulk.dataset.doseIds)}})}}); const data=await response.json(); if(!response.ok) throw new Error(data.detail||'Could not record prepared doses'); document.querySelectorAll('section').forEach(item=>item.remove()); bulk.remove(); result.textContent=`${{data.taken_count}} prepared doses recorded as taken.`; }} catch(error) {{ result.textContent=error.message; bulk.disabled=false; }} }})); document.querySelectorAll('.actions button').forEach(button => button.addEventListener('click', async () => {{
   const actions = button.parentElement; actions.querySelectorAll('button').forEach(item => item.disabled = true);
   const result = document.querySelector('#result');
   try {{ const response = await fetch(location.pathname, {{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{dose_id:Number(actions.dataset.doseId),action:button.dataset.action}})}}); const data = await response.json(); if (!response.ok) throw new Error(data.detail || 'Could not record dose'); actions.parentElement.remove(); result.textContent = `${{data.medicine_name}} recorded as ${{data.status}}.`; }}
@@ -1662,6 +1996,20 @@ async def action_reminder_dose(token: str, request: Request, session: Session = 
     record = notification_link(token, session)
     try:
         body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Choose a valid reminder action")
+    if body.get("action") == "take_prepared":
+        try:
+            requested = {int(value) for value in body.get("dose_ids", [])}
+        except (TypeError, ValueError):
+            requested = set()
+        doses = [item for item in reminder_doses(record, session) if item.id in requested]
+        if not requested or len(doses) != len(requested) or not all(item.prepared_at for item in doses):
+            raise HTTPException(status_code=422, detail="Choose only prepared doses from this reminder")
+        user = session.get(User, record.user_id)
+        take_prepared_dose_group(doses, user, session)
+        return {"taken_count": len(doses), "status": "taken"}
+    try:
         payload = ScheduledDoseAction.model_validate(body)
         dose_id = int(body.get("dose_id"))
     except Exception:
@@ -1687,6 +2035,44 @@ def action_scheduled_dose(
     if not dose:
         raise HTTPException(status_code=404, detail="Scheduled dose not found")
     apply_scheduled_dose_action(dose, user, payload, session)
+    session.commit()
+    session.refresh(dose)
+    return dose_read(dose, session, medication_display_names(user, session))
+
+
+@app.post("/api/v1/doses/{dose_id}/prepared-resolution", response_model=ScheduledDoseRead)
+def resolve_skipped_prepared_dose(
+    dose_id: int,
+    payload: PreparedDoseResolution,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+):
+    """Reconcile the tablet left in a pill box after a skipped prepared dose."""
+    dose = session.query(ScheduledDose).filter_by(id=dose_id, user_id=user.id).first()
+    if not dose:
+        raise HTTPException(status_code=404, detail="Scheduled dose not found")
+    if dose.status != "skipped" or not dose.prepared_at:
+        raise HTTPException(status_code=409, detail="Only a skipped prepared dose can be reconciled this way")
+    allocations = prepared_allocations(dose, session)
+    if not allocations:
+        raise HTTPException(status_code=409, detail="This prepared dose has already been reconciled")
+    if payload.action == "dispose" and not (payload.reason or "").strip():
+        raise HTTPException(status_code=422, detail="Give a reason before removing a prepared tablet")
+    now = datetime.utcnow()
+    for allocation in allocations:
+        pack = session.get(Pack, allocation.pack_id)
+        if not pack or pack.quantity_in_dosette + 1e-9 < allocation.quantity:
+            raise HTTPException(status_code=409, detail="The pill-box count is too low; correct the physical count first")
+        pack.quantity_in_dosette = round(pack.quantity_in_dosette - allocation.quantity, 6)
+        if payload.action == "return_to_pack":
+            pack.quantity_remaining = round(pack.quantity_remaining + allocation.quantity, 6)
+            event_type, notes = "returned_to_pack", f"Returned unused prepared dose to pack ({dose.administration_time})"
+            allocation.status = "returned"
+        else:
+            event_type, notes = "disposed", f"Unused prepared dose removed: {payload.reason.strip()}"
+            allocation.status = "disposed"
+        allocation.resolved_at = now
+        session.add(SupplyEvent(pack_id=pack.id, event_type=event_type, quantity=allocation.quantity, notes=notes))
     session.commit()
     session.refresh(dose)
     return dose_read(dose, session, medication_display_names(user, session))
@@ -1894,9 +2280,12 @@ def create_pack_from_scan(scan: ScannedPackCreate, user: User = Depends(current_
             category=scan.category,
             barcode=gtin,
             catalogue_source=catalogue_product.source,
+            leaflet_url=catalogue_product.leaflet_url,
         )
         session.add(product)
         session.flush()
+    elif not product.leaflet_url and catalogue_product.leaflet_url:
+        product.leaflet_url = catalogue_product.leaflet_url
     save_default_common_name(user, product.id, catalogue_product.common_name, session)
     if scan.medikeep_medication_id is not None:
         existing_link = session.query(MediKeepLink).filter_by(user_id=user.id, product_id=product.id).first()

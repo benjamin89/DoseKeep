@@ -29,6 +29,10 @@ const administrationTimesResult = document.querySelector("#administration-times-
 const notificationSettingsForm = document.querySelector("#notification-settings-form");
 const notificationSettingsResult = document.querySelector("#notification-settings-result");
 const administrationContainer = document.querySelector("#administration");
+const pillBoxStart = document.querySelector("#pill-box-start");
+const pillBoxDays = document.querySelector("#pill-box-days");
+const pillBoxResult = document.querySelector("#pill-box-result");
+const pillBoxRoutineResult = document.querySelector("#pill-box-routine-result");
 const complianceContainer = document.querySelector("#compliance-report");
 const householdsContainer = document.querySelector("#households");
 const householdResult = document.querySelector("#household-result");
@@ -48,6 +52,15 @@ let scanControls;
 let savedScanProductId = null;
 let currentRaw;
 let complianceDays = 7;
+
+function localDateInputValue(value = new Date()) {
+  const offset = value.getTimezoneOffset() * 60000;
+  return new Date(value.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function checkedValues(selector) {
+  return [...document.querySelectorAll(`${selector} input:checked`)].map(input => input.value);
+}
 
 // The API stores naive datetimes as UTC. Tell the browser that explicitly;
 // otherwise a timestamp such as 20:00 UTC is interpreted as 20:00 local.
@@ -95,9 +108,24 @@ async function showSignedIn(status) {
   document.querySelector("#welcome").textContent = `Signed in as ${status.user.email}. Scan a pack, check its expiry, then keep your stock up to date.`;
   document.querySelector("#account-settings").textContent = `Signed in as ${status.user.email}. Your packs and any MediKeep connection are private to this DoseKeep account.`;
   adminNav.hidden = !status.user.is_admin;
+  if (!pillBoxStart.value) pillBoxStart.value = localDateInputValue();
   showPage("administration");
-  await Promise.all([loadMedicines(), loadPacks(), loadMediKeep(), loadAdministrationTimes(), loadNotificationSettings(), loadDeviceTokens()]);
+  await Promise.all([loadMedicines(), loadPacks(), loadMediKeep(), loadAdministrationTimes(), loadNotificationSettings(), loadPillBoxSettings(), loadDeviceTokens()]);
   await loadMediKeepConnection(status.medikeep_connected);
+}
+
+async function loadPillBoxSettings() {
+  try {
+    const settings = await api("/api/v1/settings/pill-box");
+    document.querySelector("#pill-box-routine-enabled").checked = settings.enabled;
+    document.querySelector("#pill-box-topup-weekday").value = String(settings.top_up_weekday);
+    document.querySelector("#pill-box-stockcheck-weekday").value = String(settings.stock_check_weekday);
+    pillBoxDays.value = String(settings.days);
+    document.querySelectorAll("#pill-box-weekdays input").forEach(input => { input.checked = settings.weekdays.includes(Number(input.value)); });
+    document.querySelectorAll("#pill-box-slots input").forEach(input => { input.checked = settings.slots.includes(input.value); });
+  } catch {
+    pillBoxRoutineResult.textContent = "Could not load pill-box routine settings.";
+  }
 }
 
 async function loadAdminOverview() {
@@ -359,8 +387,10 @@ async function loadAdministration() {
         const canRecordEarly = dose.status === "due" && future && millisecondsUntilDue <= 60 * 60 * 1000;
         const dueTime = dueAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         let doseState = dose.status;
-        if (future && dose.status === "due") doseState = canRecordEarly ? "ready to record" : "";
+        const prepared = Boolean(dose.prepared_at);
+        if (future && ["due", "prepared"].includes(dose.status)) doseState = canRecordEarly ? (prepared ? "prepared in pill box · ready to record" : "ready to record") : (prepared ? "prepared in pill box" : "");
         if (future && dose.status === "snoozed") doseState = `snoozed until ${dueTime}`;
+        if (!future && prepared && ["due", "snoozed", "prepared"].includes(dose.status)) doseState = "prepared in pill box · due";
         if (dose.status === "taken" && dose.actioned_at) {
           const takenAt = utcDate(dose.actioned_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
           doseState = `taken at ${takenAt}`;
@@ -371,7 +401,7 @@ async function loadAdministration() {
         }
         description.textContent = `${dose.medicine_name}${details ? ` — ${details}` : ""} · ${doseLabel(dose.quantity)}${doseState ? ` · ${doseState}` : ""}`;
         item.append(description);
-        if (canRecordEarly || (!future && ["due", "snoozed"].includes(dose.status))) {
+        if (canRecordEarly || (!future && ["due", "snoozed", "prepared"].includes(dose.status))) {
           const actions = document.createElement("div");
           actions.className = "dose-actions";
           const choices = canRecordEarly
@@ -401,8 +431,63 @@ async function loadAdministration() {
           });
           item.append(actions);
         }
+        if (dose.status === "skipped" && dose.prepared_at) {
+          const reconciliation = document.createElement("div");
+          reconciliation.className = "dose-actions";
+          const note = document.createElement("p");
+          note.className = "medicine-note";
+          note.textContent = "Prepared tablet still in pill box — reconcile its physical location.";
+          const returnButton = button("Return to pack", "outline compact");
+          const disposeButton = button("Remove / dispose", "secondary compact");
+          const resolve = async (action, reason = null) => {
+            returnButton.disabled = true;
+            disposeButton.disabled = true;
+            try {
+              await api(`/api/v1/doses/${dose.id}/prepared-resolution`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action, reason }),
+              });
+              await Promise.all([loadAdministration(), loadMedicines(), loadPacks()]);
+            } catch (error) {
+              alert(`Could not reconcile prepared dose: ${error.message}`);
+              returnButton.disabled = false;
+              disposeButton.disabled = false;
+            }
+          };
+          returnButton.addEventListener("click", () => {
+            if (confirm("Return this unused prepared tablet to its original pack stock?")) resolve("return_to_pack");
+          });
+          disposeButton.addEventListener("click", () => {
+            const reason = prompt("Why is this prepared dose being removed?", "");
+            if (reason && reason.trim()) resolve("dispose", reason.trim());
+          });
+          reconciliation.append(returnButton, disposeButton);
+          item.append(note, reconciliation);
+        }
         section.append(item);
       });
+      const preparedReady = dosesAtTime.filter(dose => {
+        if (!dose.prepared_at || !["due", "snoozed", "prepared"].includes(dose.status)) return false;
+        const untilDue = utcDate(dose.due_at).getTime() - Date.now();
+        return untilDue <= 60 * 60 * 1000;
+      });
+      if (preparedReady.length > 1) {
+        const takeAll = button(`Record ${preparedReady.length} prepared doses as taken`, "primary-dose");
+        takeAll.addEventListener("click", async () => {
+          const names = preparedReady.map(dose => dose.medicine_name).join(", ");
+          if (!confirm(`Record these prepared ${time} doses as taken now?\n\n${names}`)) return;
+          takeAll.disabled = true;
+          try {
+            await api("/api/v1/pill-box/take", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dose_ids: preparedReady.map(dose => dose.id) }) });
+            await Promise.all([loadAdministration(), loadMedicines(), loadPacks()]);
+          } catch (error) {
+            alert(`Could not record prepared doses: ${error.message}`);
+            takeAll.disabled = false;
+          }
+        });
+        section.append(takeAll);
+      }
       administrationContainer.append(section);
     });
     const prnMedicines = planned.filter(medicine => medicine.as_required);
@@ -635,11 +720,20 @@ function renderMedicine(medicine) {
   if (medicine.regular_times.length) notes.push(`regular: ${medicine.regular_times.map(time => `${time} (${formatQuantity(medicine.dose_quantities?.[time] ?? 1)})`).join(", ")}`);
   if (medicine.as_required) notes.push(`when required${medicine.prn_notes ? ` — ${medicine.prn_notes}` : ""}`);
   if (medicine.active_pack_count) notes.push(`${medicine.active_pack_count} active pack${medicine.active_pack_count === 1 ? "" : "s"}`);
-  if (medicine.quantity_in_dosette) notes.push(`${medicine.quantity_in_dosette} in dosette`);
+  if (medicine.quantity_in_dosette) notes.push(`${medicine.quantity_in_dosette} prepared in pill box`);
   if (medicine.linked_to_medikeep) notes.push("linked to MediKeep");
   if (medicine.medikeep_status && medicine.medikeep_status !== "active") notes.push(`MediKeep: ${medicine.medikeep_status}`);
   detail.textContent = notes.join(" · ") || "Scan a pack to start stock tracking.";
   card.append(title, directions, stock, detail);
+  if (medicine.leaflet_url) {
+    const leaflet = document.createElement("a");
+    leaflet.className = "official-leaflet-link";
+    leaflet.href = medicine.leaflet_url;
+    leaflet.target = "_blank";
+    leaflet.rel = "noopener noreferrer";
+    leaflet.textContent = "Official leaflet and medicine information ↗";
+    card.append(leaflet);
+  }
   if (!medicine.product_id && medicine.medikeep_medication_id) {
     const importButton = button("Track in DoseKeep", "secondary compact");
     importButton.addEventListener("click", async () => {
@@ -885,6 +979,7 @@ function formatEvent(event) {
     taken_from_pack: "Taken from pack",
     taken: "Taken from dosette",
     dosette_fill: "Moved to dosette",
+    returned_to_pack: "Returned from pill box",
     skipped: "Skipped",
     disposed: "Disposed",
     removed_from_stock: "Removed from stock",
@@ -1115,6 +1210,15 @@ async function findProduct(raw) {
     const match = await api(`/api/v1/catalogue/fr/${decoded.gtin}`);
     result.textContent = JSON.stringify(decoded, null, 2);
     productMatch.innerHTML = `<strong>${match.name}</strong><br>${match.presentation || match.form || "French catalogue match"}${match.common_name ? `<br><small>Common name suggestion: ${match.common_name}</small>` : ""}<br><small>${match.holder || ""}</small>`;
+    if (match.leaflet_url) {
+      const leaflet = document.createElement("a");
+      leaflet.className = "official-leaflet-link";
+      leaflet.href = match.leaflet_url;
+      leaflet.target = "_blank";
+      leaflet.rel = "noopener noreferrer";
+      leaflet.textContent = "Open official leaflet and medicine information ↗";
+      productMatch.append(document.createElement("br"), leaflet);
+    }
     quantity.value = match.quantity_hint || "";
     productCategory.value = "medicine";
     await Promise.all([showMediKeepSuggestions(match.name), showExistingMedicineSuggestions()]);
@@ -1128,6 +1232,66 @@ document.querySelector("#parse").addEventListener("click", () => findProduct(doc
 document.querySelector("#refresh-packs").addEventListener("click", loadPacks);
 document.querySelector("#refresh-medicines").addEventListener("click", loadMedicines);
 document.querySelector("#refresh-administration").addEventListener("click", loadAdministration);
+document.querySelector("#prepare-pill-box").addEventListener("click", async () => {
+  const button = document.querySelector("#prepare-pill-box");
+  const days = Number(pillBoxDays.value);
+  const weekdays = checkedValues("#pill-box-weekdays").map(Number);
+  const slots = checkedValues("#pill-box-slots");
+  if (!pillBoxStart.value || !Number.isInteger(days) || days < 1 || days > 28 || !weekdays.length || !slots.length) {
+    pillBoxResult.textContent = "Choose a start date, 1–28 days, at least one weekday and one administration time.";
+    return;
+  }
+  const details = `${pillBoxStart.value}, ${days} calendar days; ${slots.join(", ")}.`;
+  if (!confirm(`Prepare selected doses into the pill box?\n\n${details}\n\nThis moves available tablets from packs into the prepared-pill count. It does not mark them taken.`)) return;
+  button.disabled = true;
+  pillBoxResult.textContent = "Preparing selected doses…";
+  try {
+    const outcome = await api("/api/v1/pill-box/prepare", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ start_date: pillBoxStart.value, days, weekdays, slots }),
+    });
+    const prepared = `${outcome.prepared_count} dose${outcome.prepared_count === 1 ? "" : "s"} prepared (${formatQuantity(outcome.prepared_quantity)} item${outcome.prepared_quantity === 1 ? "" : "s"}).`;
+    pillBoxResult.textContent = outcome.unavailable.length ? `${prepared} ${outcome.unavailable.length} dose${outcome.unavailable.length === 1 ? " could" : "s could"} not be prepared because stock is short. Add stock and run this again to top up.` : prepared;
+    if (outcome.unavailable.length) alert(`Some selected doses were not prepared:\n\n${outcome.unavailable.join("\n")}`);
+    await Promise.all([loadAdministration(), loadMedicines(), loadPacks()]);
+  } catch (error) {
+    pillBoxResult.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+document.querySelector("#save-pill-box-routine").addEventListener("click", async () => {
+  const button = document.querySelector("#save-pill-box-routine");
+  const days = Number(pillBoxDays.value);
+  const weekdays = checkedValues("#pill-box-weekdays").map(Number);
+  const slots = checkedValues("#pill-box-slots");
+  if (!Number.isInteger(days) || days < 1 || days > 28 || !weekdays.length || !slots.length) {
+    pillBoxRoutineResult.textContent = "Choose 1–28 days, at least one preparation day and one administration time.";
+    return;
+  }
+  button.disabled = true;
+  pillBoxRoutineResult.textContent = "Saving weekly routine…";
+  try {
+    const settings = await api("/api/v1/settings/pill-box", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: document.querySelector("#pill-box-routine-enabled").checked,
+        top_up_weekday: Number(document.querySelector("#pill-box-topup-weekday").value),
+        stock_check_weekday: Number(document.querySelector("#pill-box-stockcheck-weekday").value),
+        days,
+        weekdays,
+        slots,
+      }),
+    });
+    pillBoxRoutineResult.textContent = settings.enabled ? "Saved. DoseKeep will remind you to top up and check two-box stock through ntfy." : "Saved. Weekly pill-box reminders are disabled.";
+  } catch (error) {
+    pillBoxRoutineResult.textContent = error.message;
+  } finally {
+    button.disabled = false;
+  }
+});
 document.querySelector("#refresh-compliance").addEventListener("click", loadComplianceReport);
 document.querySelector("#download-compliance").addEventListener("click", () => {
   window.location.assign(`/api/v1/reports/compliance.pdf?days=${complianceDays}`);

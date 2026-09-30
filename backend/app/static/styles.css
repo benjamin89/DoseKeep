@@ -60,6 +60,8 @@ pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .medicine-stock strong { font-size: 1.65rem; color: var(--success); }
 .medicine-stock span { color: var(--muted); }
 .medicine-note { color: var(--muted); font-size: .88rem; margin: .45rem 0 0; }
+.official-leaflet-link { display: inline-block; margin-top: .65rem; color: var(--lavender-deep); font-size: .9rem; font-weight: 700; }
+.official-leaflet-link:focus-visible { outline: 3px solid rgba(103,117,215,.4); outline-offset: 2px; }
 .report-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .6rem; margin: 1rem 0; }
 .report-stat { display: grid; gap: .15rem; padding: .75rem; border: 1px solid #dfe4f0; border-radius: .8rem; background: #f8f9fd; }
 .report-stat strong { color: var(--ink); font-size: 1.35rem; }
@@ -77,6 +79,19 @@ pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .due-dose { border-top: 1px solid #e0e5ef; padding: .75rem 0; }
 .due-dose:first-of-type { border-top: 0; }
 .due-dose p { margin: 0; }
+.pill-box-panel { background: #f5f3ff; border-color: #d9d2f4; }
+.pill-box-panel h3 { margin-top: 0; }
+.pill-box-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.pill-box-controls label { display: grid; gap: .25rem; color: var(--muted); font-size: .9rem; }
+.pill-box-controls input { margin-top: 0; }
+.pill-box-panel fieldset { display: flex; flex-wrap: wrap; gap: .55rem .8rem; margin: .8rem 0; padding: .65rem .75rem; border: 1px solid #d8d4ec; border-radius: .7rem; }
+.pill-box-panel legend { padding: 0 .25rem; color: var(--muted); font-size: .85rem; }
+.pill-box-panel fieldset label { display: inline-flex; align-items: center; gap: .35rem; }
+.pill-box-panel fieldset input { width: auto; margin: 0; }
+.pill-box-routine { margin-top: 1rem; padding-top: .9rem; border-top: 1px solid #d8d4ec; }
+.pill-box-routine summary { cursor: pointer; color: var(--lavender-deep); font-weight: 750; }
+.pill-box-routine button { margin-top: .8rem; }
+.prepared-dose { color: var(--lavender-deep); font-weight: 700; }
 .fine-print { color: var(--muted); font-size: .8rem; text-align: center; }
 .auth-card { max-width: 23rem; margin: clamp(2rem, 10vh, 6rem) auto; padding: clamp(1.5rem, 6vw, 2.5rem); border: 0; border-radius: 1.35rem; box-shadow: 0 1.35rem 3.5rem rgba(30,28,78,.25); }
 .auth-card h1 { font-size: clamp(2rem, 7vw, 2.85rem); }
@@ -85,4 +100,4 @@ pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .account-button { float: right; margin-top: -2.2rem; }
 .optional { color: var(--muted); font-size: .8em; font-weight: 500; }
 @media (max-width: 35rem) { main { padding: .75rem .65rem 1.5rem; } #app-content { padding: 1.1rem; border-radius: 1rem; } .page-nav { gap: .25rem; padding: .25rem; } .page-nav button { flex-basis: 45%; font-size: .82rem; } }
-@media (max-width: 28rem) { .stock-row, .dose-actions, .auth-actions, .camera-actions { flex-direction: column; } .medicine-actions { flex-direction: column; } .report-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .compact { white-space: nowrap; } }
+@media (max-width: 28rem) { .stock-row, .dose-actions, .auth-actions, .camera-actions { flex-direction: column; } .medicine-actions { flex-direction: column; } .pill-box-controls { grid-template-columns: 1fr; } .report-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .compact { white-space: nowrap; } }

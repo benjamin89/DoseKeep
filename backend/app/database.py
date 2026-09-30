@@ -29,6 +29,9 @@ def ensure_schema() -> None:
     if not DATABASE_URL.startswith("sqlite"):
         return
     with engine.begin() as connection:
+        product_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(products)"))}
+        if product_columns and "leaflet_url" not in product_columns:
+            connection.execute(text("ALTER TABLE products ADD COLUMN leaflet_url TEXT"))
         columns = {row[1] for row in connection.execute(text("PRAGMA table_info(packs)"))}
         if "quantity_in_dosette" not in columns:
             connection.execute(text("ALTER TABLE packs ADD COLUMN quantity_in_dosette INTEGER NOT NULL DEFAULT 0"))
@@ -41,6 +44,8 @@ def ensure_schema() -> None:
             connection.execute(text("ALTER TABLE users ADD COLUMN timezone TEXT NOT NULL DEFAULT 'Europe/Paris'"))
         if "administration_times" not in user_columns:
             connection.execute(text("ALTER TABLE users ADD COLUMN administration_times TEXT NOT NULL DEFAULT '{}'"))
+        if "pill_box_settings" not in user_columns:
+            connection.execute(text("ALTER TABLE users ADD COLUMN pill_box_settings TEXT NOT NULL DEFAULT '{}'"))
         if "notification_settings" not in user_columns:
             connection.execute(text("ALTER TABLE users ADD COLUMN notification_settings TEXT NOT NULL DEFAULT '{}'"))
         if "is_admin" not in user_columns:
@@ -52,6 +57,8 @@ def ensure_schema() -> None:
             connection.execute(text("ALTER TABLE scheduled_doses ADD COLUMN notified_at DATETIME"))
         if dose_columns and "quantity" not in dose_columns:
             connection.execute(text("ALTER TABLE scheduled_doses ADD COLUMN quantity REAL NOT NULL DEFAULT 1"))
+        if dose_columns and "prepared_at" not in dose_columns:
+            connection.execute(text("ALTER TABLE scheduled_doses ADD COLUMN prepared_at DATETIME"))
         schedule_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(medication_schedules)"))}
         if schedule_columns and "regular_doses" not in schedule_columns:
             connection.execute(text("ALTER TABLE medication_schedules ADD COLUMN regular_doses TEXT NOT NULL DEFAULT '{}'"))

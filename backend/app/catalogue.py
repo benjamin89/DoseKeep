@@ -28,6 +28,9 @@ class CatalogueProduct:
     holder: str | None
     presentation: str | None
     quantity_hint: int | None
+    # This public medicine page contains the official patient leaflet where
+    # one is published, plus the authority's product information.
+    leaflet_url: str | None = None
     source: str = "France — BDPM"
 
 
@@ -110,5 +113,6 @@ def lookup_french_gtin(gtin: str) -> CatalogueProduct | None:
                     holder=fields[8].strip() if len(fields) > 8 and fields[8].strip() else None,
                     presentation=presentation,
                     quantity_hint=_quantity_hint(presentation),
+                    leaflet_url=f"https://base-donnees-publique.medicaments.gouv.fr/medicament/{cis_id}/extrait",
                 )
     return None

@@ -23,6 +23,7 @@ class Product(Base):
     category: Mapped[str] = mapped_column(String(40), default="medicine")
     barcode: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True)
     catalogue_source: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    leaflet_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     medikeep_medication_id: Mapped[int | None] = mapped_column(nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -39,6 +40,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(512))
     timezone: Mapped[str] = mapped_column(String(80), default="Europe/Paris")
     administration_times: Mapped[str] = mapped_column(Text, default="{}")
+    pill_box_settings: Mapped[str] = mapped_column(Text, default="{}")
     # Kept per account: a topic can be private even on a shared ntfy server.
     notification_settings: Mapped[str] = mapped_column(Text, default="{}")
     is_admin: Mapped[bool] = mapped_column(default=False)
@@ -231,6 +233,9 @@ class ScheduledDose(Base):
     # Snapshot the planned quantity so historic MAR records do not change if
     # someone later edits their administration plan.
     quantity: Mapped[float] = mapped_column(Float, default=1)
+    # A dose can be physically placed in a pill box before it is administered.
+    # Keep that state separate from the MAR outcome (taken/skipped).
+    prepared_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     actioned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Set only after ntfy has accepted the message. Snoozing clears this so
@@ -240,6 +245,23 @@ class ScheduledDose(Base):
 
     user: Mapped[User] = relationship(back_populates="scheduled_doses")
     product: Mapped[Product] = relationship()
+
+
+class PillBoxAllocation(Base):
+    """Exact pack units reserved for a single prepared MAR dose."""
+
+    __tablename__ = "pill_box_allocations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dose_id: Mapped[int] = mapped_column(ForeignKey("scheduled_doses.id"), index=True)
+    pack_id: Mapped[int] = mapped_column(ForeignKey("packs.id"), index=True)
+    quantity: Mapped[float] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(20), default="prepared", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    dose: Mapped[ScheduledDose] = relationship()
+    pack: Mapped[Pack] = relationship()
 
 
 class SupplyEvent(Base):
