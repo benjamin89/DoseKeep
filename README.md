@@ -14,6 +14,7 @@ DoseKeep is a self-hosted, mobile-friendly medicine supply and administration co
 - records PRN use with the quantity actually taken;
 - offers an early-recording window of one hour before a scheduled time; reminders are sent only when the dose becomes due;
 - lets a user record taken, skipped or snoozed doses and creates a 7-, 30- or 90-day compliance report, including PDF download;
+- supports pill-box preparation, separately recording **prepared**, **taken** and unresolved skipped doses;
 - supports private ntfy reminders and short-lived, no-login reminder action links;
 - supports private accounts, household shared cabinets, household invitations, and revocable guest QR links;
 - can create revocable medication-and-time-scoped tokens for a physical button or Home Assistant REST command;
@@ -51,6 +52,8 @@ Use **Set physical count** if a pack count is wrong. This creates a correction e
 
 From the **Medication administration record**, choose a start date, the calendar days and administration times to prepare. DoseKeep moves available units from packs into a **prepared pill-box** count, but does not mark them taken. If stock is short, it prepares what it can and reports the remaining doses; after adding a pack, run the same selection again to top up only the outstanding doses. At the scheduled time, prepared doses retain the usual reminder flow and can be recorded together for one administration slot.
 
+If a prepared dose is skipped, it remains physically accounted for until it is explicitly **returned to its source pack** or **removed/disposed**, with a reason. This prevents a skipped tablet being silently treated as taken or disappearing from stock.
+
 Optionally save this as a weekly routine. DoseKeep can remind you on the chosen top-up day and run a second weekly stock check that forecasts enough supply for the current and following pill box. These prompts use your private ntfy settings and never prepare doses automatically.
 
 ### 2. Set an administration plan
@@ -78,9 +81,9 @@ Open **Reports** to view 7-, 30- or 90-day regular-dose compliance. PRN doses ar
 
 ## Reminders with ntfy
 
-In **Settings → Medication reminders**, enable reminders and enter an HTTPS ntfy server and private topic. DoseKeep sends one reminder when a scheduled dose is due and one new reminder when a dose is snoozed.
+In **Settings → Medication reminders**, enable reminders and enter an HTTPS ntfy server and private topic. DoseKeep sends one grouped reminder for medicines due in the same administration slot, and one new reminder when a dose is snoozed. A fully prepared slot is labelled as a pill-box reminder and can be recorded together after confirmation.
 
-The notification includes current stock and a short-lived link allowing the recipient to record the listed dose as taken, skipped or snoozed without signing in. Treat the link as sensitive: use a private, hard-to-guess topic and do not forward notifications.
+The notification includes current stock and a short-lived link allowing the recipient to record the listed dose as taken, skipped or snoozed without signing in. Prepared same-slot doses also offer a bulk **Record all prepared doses as taken** action. Treat the link as sensitive: use a private, hard-to-guess topic and do not forward notifications.
 
 No ntfy credentials are stored by this integration; use a server that accepts topic-only publishing or a suitable private ntfy configuration.
 
@@ -131,6 +134,5 @@ The app is a FastAPI service with a static browser client. Start the service wit
 ## Roadmap
 
 - Product catalogue resolvers for the UK and Spain, with manual fallback.
-- Full browser UI for dosette filling and disposal events already available through the API.
 - Refill and expiry notifications.
 - Additional Home Assistant integration helpers.

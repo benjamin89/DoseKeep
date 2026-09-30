@@ -1760,6 +1760,11 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
     """
     if days not in {7, 30, 90}:
         raise HTTPException(status_code=422, detail="Choose a 7, 30 or 90 day report")
+    # Use the same stable-medicine migration as the dashboard before looking
+    # at historic MAR rows. Otherwise an old barcode/product record can show
+    # as a duplicate medicine in compliance after a newer pack is linked.
+    migrate_legacy_links(user, session)
+    consolidate_medikeep_products(user, session)
     generate_today_doses(user, session)
     now = datetime.utcnow()
     zone = user_zone(user)
@@ -1778,6 +1783,10 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
         .all()
     )
     names = medication_display_names(user, session)
+    links_by_product = {
+        link.product_id: link
+        for link in session.query(MediKeepLink).filter_by(user_id=user.id).all()
+    }
     inactive_product_ids = set()
     try:
         current_medications = {item.id: item for item in all_medications(user_medikeep_config(user, session))}
@@ -1789,7 +1798,7 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
     except (MediKeepUnavailable, HTTPException):
         pass
     totals = {"taken": 0, "skipped": 0, "missed": 0, "pending": 0}
-    by_product: dict[int, dict] = {}
+    by_product: dict[str, dict] = {}
     exceptions = []
     for dose in doses:
         # Retain real historical taken/skipped actions. Do not retroactively
@@ -1805,8 +1814,10 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
         elif dose.status == "snoozed" and dose.due_at > now:
             outcome = "pending"
         totals[outcome] += 1
+        link = links_by_product.get(dose.product_id)
+        medicine_key = f"medikeep:{link.medikeep_medication_id}" if link else f"product:{dose.product_id}"
         product = by_product.setdefault(
-            dose.product_id,
+            medicine_key,
             {"product_id": dose.product_id, "medicine_name": names.get(dose.product_id) or (session.get(Product, dose.product_id).name if session.get(Product, dose.product_id) else "Unknown medicine"), "taken": 0, "skipped": 0, "missed": 0, "pending": 0},
         )
         product[outcome] += 1
