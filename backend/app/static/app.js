@@ -33,6 +33,7 @@ const pillBoxStart = document.querySelector("#pill-box-start");
 const pillBoxDays = document.querySelector("#pill-box-days");
 const pillBoxResult = document.querySelector("#pill-box-result");
 const pillBoxRoutineResult = document.querySelector("#pill-box-routine-result");
+const pillBoxContents = document.querySelector("#pill-box-contents-list");
 const complianceContainer = document.querySelector("#compliance-report");
 const householdsContainer = document.querySelector("#households");
 const householdResult = document.querySelector("#household-result");
@@ -43,6 +44,7 @@ const adminOverview = document.querySelector("#admin-overview");
 const pages = {
   medicines: document.querySelector("#page-medicines"),
   administration: document.querySelector("#page-administration"),
+  "pill-box": document.querySelector("#page-pill-box"),
   report: document.querySelector("#page-report"),
   household: document.querySelector("#page-household"),
   admin: document.querySelector("#page-admin"),
@@ -96,6 +98,7 @@ function showPage(name) {
     button.classList.toggle("current", button.dataset.pageTarget === name);
   });
   if (name === "administration") loadAdministration();
+  if (name === "pill-box") loadPillBoxContents();
   if (name === "report") loadComplianceReport();
   if (name === "household") loadHouseholds();
   if (name === "admin") loadAdminOverview();
@@ -125,6 +128,56 @@ async function loadPillBoxSettings() {
     document.querySelectorAll("#pill-box-slots input").forEach(input => { input.checked = settings.slots.includes(input.value); });
   } catch {
     pillBoxRoutineResult.textContent = "Could not load pill-box routine settings.";
+  }
+}
+
+function pillBoxDateLabel(value) {
+  return utcDate(value).toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
+}
+
+async function loadPillBoxContents() {
+  pillBoxContents.textContent = "Loading pill box contents…";
+  try {
+    const doses = await api("/api/v1/pill-box/contents");
+    pillBoxContents.replaceChildren();
+    if (!doses.length) {
+      pillBoxContents.textContent = "No prepared tablets are currently recorded in the pill box.";
+      return;
+    }
+    const days = new Map();
+    doses.forEach(dose => {
+      const day = utcDate(dose.scheduled_for).toLocaleDateString("en-CA");
+      if (!days.has(day)) days.set(day, { when: dose.scheduled_for, slots: new Map() });
+      const slots = days.get(day).slots;
+      if (!slots.has(dose.administration_time)) slots.set(dose.administration_time, []);
+      slots.get(dose.administration_time).push(dose);
+    });
+    const slotLabels = { morning: "Morning", midday: "Midday", evening: "Teatime / evening", bedtime: "Bedtime" };
+    days.forEach(({ when, slots }) => {
+      const day = document.createElement("section");
+      day.className = "pill-box-day";
+      const heading = document.createElement("h4");
+      heading.textContent = pillBoxDateLabel(when);
+      day.append(heading);
+      ["morning", "midday", "evening", "bedtime"].forEach(slot => {
+        const slotDoses = slots.get(slot);
+        if (!slotDoses?.length) return;
+        const compartment = document.createElement("div");
+        compartment.className = "pill-box-compartment";
+        const label = document.createElement("h5");
+        label.textContent = slotLabels[slot];
+        compartment.append(label);
+        slotDoses.forEach(dose => {
+          const item = document.createElement("p");
+          item.textContent = `${dose.medicine_name} · ${doseLabel(dose.quantity)}${dose.status === "skipped" ? " · needs reconciliation" : ""}`;
+          compartment.append(item);
+        });
+        day.append(compartment);
+      });
+      pillBoxContents.append(day);
+    });
+  } catch (error) {
+    pillBoxContents.textContent = `Could not load pill box contents: ${error.message}`;
   }
 }
 
@@ -1293,6 +1346,7 @@ document.querySelector("#save-pill-box-routine").addEventListener("click", async
   }
 });
 document.querySelector("#refresh-compliance").addEventListener("click", loadComplianceReport);
+document.querySelector("#refresh-pill-box-contents").addEventListener("click", loadPillBoxContents);
 document.querySelector("#download-compliance").addEventListener("click", () => {
   window.location.assign(`/api/v1/reports/compliance.pdf?days=${complianceDays}`);
 });

@@ -33,6 +33,7 @@
       <button id="sign-out" class="secondary compact account-button">Sign out</button>
       <nav class="page-nav" aria-label="DoseKeep pages">
         <button type="button" data-page-target="administration" class="current">Medication administration record</button>
+        <button type="button" data-page-target="pill-box">Pill box</button>
         <button type="button" data-page-target="report">Reports</button>
         <button type="button" data-page-target="medicines">Medicines</button>
         <button type="button" data-page-target="household">Household</button>
@@ -126,6 +127,21 @@
           </div>
           <button id="refresh-administration" type="button" class="secondary compact">Refresh</button>
         </div>
+        <div id="administration" aria-live="polite">Loading administration plan…</div>
+      </section>
+      <section id="page-pill-box" class="app-page" hidden>
+        <div class="section-heading">
+          <div>
+            <h2>Pill box</h2>
+            <p>See what is physically prepared, then add selected regular doses to your box.</p>
+          </div>
+          <button id="refresh-pill-box-contents" type="button" class="secondary compact">Refresh</button>
+        </div>
+        <section id="pill-box-contents" class="pill-box-panel" aria-labelledby="pill-box-contents-heading">
+          <h3 id="pill-box-contents-heading">Current pill box</h3>
+          <p>Tablets still physically prepared in the box, arranged by day and compartment.</p>
+          <div id="pill-box-contents-list"></div>
+        </section>
         <section class="pill-box-panel" aria-labelledby="pill-box-heading">
           <h3 id="pill-box-heading">Prepare pill box</h3>
           <p>Reserve regular doses from packs without recording them as taken. Re-run this later to top up any doses that were short of stock.</p>
@@ -153,7 +169,6 @@
             <p id="pill-box-routine-result" class="hint" aria-live="polite"></p>
           </details>
         </section>
-        <div id="administration" aria-live="polite">Loading administration plan…</div>
       </section>
       <section id="page-report" class="app-page" hidden>
         <div class="section-heading">
@@ -250,6 +265,6 @@
       <p class="fine-print">DoseKeep tracks supply and reminders; it does not provide prescribing or clinical advice.</p>
       </div>
     </main>
-    <script src="/app.js?v=0.37.0"></script>
+    <script src="/app.js?v=0.39.0"></script>
   </body>
 </html>

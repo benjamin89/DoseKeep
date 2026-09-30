@@ -81,6 +81,11 @@ pre { overflow-wrap: anywhere; white-space: pre-wrap; }
 .due-dose p { margin: 0; }
 .pill-box-panel { background: #f5f3ff; border-color: #d9d2f4; }
 .pill-box-panel h3 { margin-top: 0; }
+.pill-box-day { margin-top: .8rem; padding-top: .8rem; border-top: 1px solid #d8d4ec; }
+.pill-box-day h4 { margin: 0 0 .6rem; }
+.pill-box-compartment { margin: .55rem 0; padding: .6rem .75rem; border-radius: .65rem; background: #fff; }
+.pill-box-compartment h5 { margin: 0 0 .35rem; color: var(--lavender-deep); font-size: .9rem; }
+.pill-box-compartment p { margin: .3rem 0; }
 .pill-box-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
 .pill-box-controls label { display: grid; gap: .25rem; color: var(--muted); font-size: .9rem; }
 .pill-box-controls input { margin-top: 0; }

@@ -1658,6 +1658,30 @@ def list_today_doses(user: User = Depends(current_user), session: Session = Depe
     return [dose_read(dose, session, display_names) for dose in doses]
 
 
+@app.get("/api/v1/pill-box/contents", response_model=list[ScheduledDoseRead])
+def list_pill_box_contents(user: User = Depends(current_user), session: Session = Depends(get_session)):
+    """List doses which are still physically present in the pill box."""
+    doses = (
+        session.query(ScheduledDose)
+        .filter(
+            ScheduledDose.user_id == user.id,
+            ScheduledDose.prepared_at.is_not(None),
+            ScheduledDose.status.in_(("due", "snoozed", "prepared", "skipped")),
+        )
+        .order_by(ScheduledDose.scheduled_for, ScheduledDose.due_at, ScheduledDose.id)
+        .all()
+    )
+    # A skipped prepared dose remains in the list only until it has been
+    # returned to its pack or explicitly disposed of. Pending legacy prepared
+    # records remain visible, even though they pre-date allocation tracking.
+    visible = [
+        dose for dose in doses
+        if dose.status != "skipped" or prepared_allocations(dose, session)
+    ]
+    display_names = medication_display_names(user, session)
+    return [dose_read(dose, session, display_names) for dose in visible]
+
+
 @app.post("/api/v1/pill-box/prepare", response_model=PillBoxPrepareResult)
 def prepare_pill_box(
     payload: PillBoxPrepareRequest,

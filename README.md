@@ -50,7 +50,7 @@ Use **Set physical count** if a pack count is wrong. This creates a correction e
 
 ### Pill box preparation
 
-From the **Medication administration record**, choose a start date, the calendar days and administration times to prepare. DoseKeep moves available units from packs into a **prepared pill-box** count, but does not mark them taken. If stock is short, it prepares what it can and reports the remaining doses; after adding a pack, run the same selection again to top up only the outstanding doses. At the scheduled time, prepared doses retain the usual reminder flow and can be recorded together for one administration slot.
+From the **Pill box** page, first check the current box contents by day and compartment, then choose a start date, the calendar days and administration times to prepare. DoseKeep moves available units from packs into a **prepared pill-box** count, but does not mark them taken. If stock is short, it prepares what it can and reports the remaining doses; after adding a pack, run the same selection again to top up only the outstanding doses. At the scheduled time, prepared doses retain the usual reminder flow and can be recorded together for one administration slot.
 
 If a prepared dose is skipped, it remains physically accounted for until it is explicitly **returned to its source pack** or **removed/disposed**, with a reason. This prevents a skipped tablet being silently treated as taken or disappearing from stock.
 
