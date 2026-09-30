@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
             pass
 
 
-app = FastAPI(title="DoseKeep", version="0.7.3", lifespan=lifespan)
+app = FastAPI(title="DoseKeep", version="0.8.0", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=master_key(),
@@ -1923,9 +1923,24 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
         medicine_key, _ = report_medicine_key(dose.product_id)
         product = by_product.setdefault(
             medicine_key,
-            {"product_id": dose.product_id, "medicine_name": names.get(dose.product_id) or (session.get(Product, dose.product_id).name if session.get(Product, dose.product_id) else "Unknown medicine"), "taken": 0, "skipped": 0, "missed": 0, "pending": 0},
+            {
+                "product_id": dose.product_id,
+                "medicine_name": names.get(dose.product_id) or (session.get(Product, dose.product_id).name if session.get(Product, dose.product_id) else "Unknown medicine"),
+                "taken": 0,
+                "skipped": 0,
+                "missed": 0,
+                "pending": 0,
+                "history": [],
+            },
         )
         product[outcome] += 1
+        product["history"].append({
+            "scheduled_for": dose.scheduled_for,
+            "administration_time": dose.administration_time,
+            "quantity": dose.quantity,
+            "outcome": outcome,
+            "actioned_at": dose.actioned_at,
+        })
         if outcome in {"skipped", "missed"}:
             exceptions.append({
                 "medicine_name": product["medicine_name"],
@@ -1937,6 +1952,7 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
     for item in by_product.values():
         item["expected"] = item["taken"] + item["skipped"] + item["missed"]
         item["taken_rate"] = round((item["taken"] / item["expected"]) * 100) if item["expected"] else None
+        item["history"].sort(key=lambda entry: entry["scheduled_for"])
     return {
         "days": days,
         "start_date": local_start.isoformat(),
@@ -1994,29 +2010,57 @@ def compliance_report_pdf(days: int = 7, user: User = Depends(current_user), ses
         ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
     ]))
     story.extend([table, Spacer(1, 7 * mm)])
-    story.append(Paragraph("By medicine", styles["Heading2"]))
-    medicine_rows = [["Medicine", "Taken", "Skipped", "Not recorded", "Taken rate"]]
+    story.append(Paragraph("Medication details", styles["Heading2"]))
+
+    def local_time(value: datetime | None) -> str:
+        if not value:
+            return "—"
+        return value.replace(tzinfo=timezone.utc).astimezone(zone).strftime("%d %b %Y %H:%M")
+
+    outcome_labels = {
+        "taken": "Taken",
+        "skipped": "Skipped",
+        "missed": "Not recorded",
+        "pending": "Pending",
+    }
     for medicine in report["medicines"]:
-        medicine_rows.append([
-            Paragraph(html.escape(medicine["medicine_name"]), styles["BodyText"]),
-            str(medicine["taken"]),
-            str(medicine["skipped"]),
-            str(medicine["missed"]),
-            "—" if medicine["taken_rate"] is None else f"{medicine['taken_rate']}%",
-        ])
-    if len(medicine_rows) == 1:
-        medicine_rows.append(["No regular doses recorded in this period.", "", "", "", ""])
-    medicine_table = Table(medicine_rows, colWidths=[71 * mm, 23 * mm, 25 * mm, 30 * mm, 25 * mm], repeatRows=1)
-    medicine_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7462BB")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), .25, colors.HexColor("#DCE1ED")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ]))
-    story.extend([medicine_table, Spacer(1, 6 * mm)])
+        story.append(Paragraph(html.escape(medicine["medicine_name"]), styles["Heading3"]))
+        medicine_rate = "No completed doses" if medicine["taken_rate"] is None else f"{medicine['taken_rate']}% taken"
+        medicine_summary = [
+            ["Taken rate", "Taken", "Skipped", "Not recorded"],
+            [medicine_rate, str(medicine["taken"]), str(medicine["skipped"]), str(medicine["missed"])],
+        ]
+        medicine_summary_table = Table(medicine_summary, colWidths=[42 * mm] * 4)
+        medicine_summary_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#7462BB")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("GRID", (0, 0), (-1, -1), .25, colors.HexColor("#DCE1ED")),
+            ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#F7F8FC")),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        history_rows = [["Scheduled dose", "Quantity", "Outcome", "Recorded"]]
+        for entry in medicine["history"]:
+            scheduled = entry["scheduled_for"].replace(tzinfo=timezone.utc).astimezone(zone)
+            history_rows.append([
+                f"{scheduled.strftime('%d %b %Y')} · {entry['administration_time'].title()} ({scheduled.strftime('%H:%M')})",
+                f"{entry['quantity']:g}",
+                outcome_labels[entry["outcome"]],
+                local_time(entry["actioned_at"]),
+            ])
+        history_table = Table(history_rows, colWidths=[68 * mm, 22 * mm, 34 * mm, 44 * mm], repeatRows=1)
+        history_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E9EDF8")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#17233D")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), .25, colors.HexColor("#DCE1ED")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.extend([medicine_summary_table, Spacer(1, 3 * mm), history_table, Spacer(1, 6 * mm)])
     story.append(Paragraph("This report records actions documented in DoseKeep. It is not prescribing or clinical advice.", styles["Italic"]))
     document.build(story)
     filename = f"dosekeep-compliance-{days}-days.pdf"

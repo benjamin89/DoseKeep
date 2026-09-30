@@ -13,7 +13,7 @@ DoseKeep is a self-hosted, mobile-friendly medicine supply and administration co
 - supports individual dose quantities per time of day, including two tablets or half a tablet, with fractional stock and run-out calculations;
 - records PRN use with the quantity actually taken;
 - offers an early-recording window of one hour before a scheduled time; reminders are sent only when the dose becomes due;
-- lets a user record taken, skipped or snoozed doses and creates a 7-, 30- or 90-day compliance report, including PDF download;
+- lets a user record taken, skipped or snoozed doses and creates a 7-, 30- or 90-day compliance report, including a per-medicine PDF summary and dose history;
 - supports pill-box preparation, separately recording **prepared**, **taken** and unresolved skipped doses;
 - supports private ntfy reminders and short-lived, no-login reminder action links;
 - supports private accounts, household shared cabinets, household invitations, and revocable guest QR links;
@@ -77,7 +77,7 @@ If a linked MediKeep medicine becomes stopped, DoseKeep does not generate fresh 
 
 ### 4. Review compliance
 
-Open **Reports** to view 7-, 30- or 90-day regular-dose compliance. PRN doses are deliberately excluded because they are not expected doses. Use **Download PDF** for a portable summary.
+Open **Reports** to view 7-, 30- or 90-day regular-dose compliance. PRN doses are deliberately excluded because they are not expected doses. **Download PDF** includes the overall summary, then each medicine’s own totals and dated administration record.
 
 ## Reminders with ntfy
 
