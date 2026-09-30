@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
             pass
 
 
-app = FastAPI(title="DoseKeep", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="DoseKeep", version="0.7.1", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=master_key(),
@@ -1822,6 +1822,33 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
         link.product_id: link
         for link in session.query(MediKeepLink).filter_by(user_id=user.id).all()
     }
+    products_by_id = {
+        product.id: product
+        for product in session.query(Product).filter(Product.id.in_({dose.product_id for dose in doses} | set(links_by_product))).all()
+    }
+
+    def report_identity(product_id: int) -> tuple[frozenset[str], str] | None:
+        product = products_by_id.get(product_id)
+        if not product:
+            return None
+        display_name = names.get(product_id) or product.name
+        return frozenset(normalize_name(display_name)), (product.strength or "").strip().casefold()
+
+    # A legacy product can survive solely in MAR history and therefore have no
+    # link left to migrate. Do not broadly merge names: only use this fallback
+    # for an orphan with no active accessible pack and exactly one linked
+    # medicine sharing its displayed common name and strength.
+    active_product_ids = {
+        product_id
+        for product_id, in session.query(Pack.product_id)
+        .filter(accessible_pack_filter(user, session), Pack.status == "active")
+        .distinct()
+        .all()
+    }
+    linked_keys_by_identity: dict[tuple[frozenset[str], str], set[str]] = {}
+    for product_id, link in links_by_product.items():
+        if identity := report_identity(product_id):
+            linked_keys_by_identity.setdefault(identity, set()).add(f"medikeep:{link.medikeep_medication_id}")
     inactive_product_ids = set()
     try:
         current_medications = {item.id: item for item in all_medications(user_medikeep_config(user, session))}
@@ -1851,6 +1878,10 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
         totals[outcome] += 1
         link = links_by_product.get(dose.product_id)
         medicine_key = f"medikeep:{link.medikeep_medication_id}" if link else f"product:{dose.product_id}"
+        if not link and dose.product_id not in active_product_ids:
+            candidates = linked_keys_by_identity.get(report_identity(dose.product_id) or (), set())
+            if len(candidates) == 1:
+                medicine_key = next(iter(candidates))
         product = by_product.setdefault(
             medicine_key,
             {"product_id": dose.product_id, "medicine_name": names.get(dose.product_id) or (session.get(Product, dose.product_id).name if session.get(Product, dose.product_id) else "Unknown medicine"), "taken": 0, "skipped": 0, "missed": 0, "pending": 0},
