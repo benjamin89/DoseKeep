@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
             pass
 
 
-app = FastAPI(title="DoseKeep", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="DoseKeep", version="0.7.0", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=master_key(),
@@ -472,11 +472,22 @@ def consolidate_medikeep_products(user: User, session: Session) -> None:
 
 def migrate_legacy_links(user: User, session: Session) -> None:
     """Carry forward links made before links became user-specific."""
+    # A pack may later have been exhausted/deleted while its MAR history is
+    # still relevant. Include both pack and scheduled-dose ownership so those
+    # historic records keep their original MediKeep identity in reports.
+    product_ids = {
+        product_id
+        for product_id, in session.query(Pack.product_id).filter(Pack.user_id == user.id).distinct().all()
+    }
+    product_ids.update(
+        product_id
+        for product_id, in session.query(ScheduledDose.product_id).filter(ScheduledDose.user_id == user.id).distinct().all()
+    )
+    if not product_ids:
+        return
     legacy_products = (
         session.query(Product)
-        .join(Pack, Pack.product_id == Product.id)
-        .filter(Pack.user_id == user.id, Product.medikeep_medication_id.is_not(None))
-        .distinct()
+        .filter(Product.id.in_(product_ids), Product.medikeep_medication_id.is_not(None))
         .all()
     )
     changed = False

@@ -4,7 +4,7 @@ DoseKeep is a self-hosted, mobile-friendly medicine supply and administration co
 
 > DoseKeep records supply and administration activity. It does **not** prescribe, check clinical appropriateness, or replace professional advice.
 
-## What DoseKeep 0.6 does
+## What DoseKeep 0.7 does
 
 - scans or accepts pasted GS1 medicine Data Matrix codes, recording GTIN/CIP, serial number, batch and expiry;
 - looks up French products in the public BDPM catalogue and asks the user to confirm a pack before saving it;
