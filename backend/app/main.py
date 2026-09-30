@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
             pass
 
 
-app = FastAPI(title="DoseKeep", version="0.7.2", lifespan=lifespan)
+app = FastAPI(title="DoseKeep", version="0.7.3", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=master_key(),
@@ -1851,6 +1851,46 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
     for product_id, link in links_by_product.items():
         if identity := report_identity(product_id):
             linked_keys_by_identity.setdefault(identity, set()).add(f"medikeep:{link.medikeep_medication_id}")
+
+    def report_medicine_key(product_id: int) -> tuple[str, bool]:
+        """Return the report group and whether it is an orphan legacy record."""
+        link = links_by_product.get(product_id)
+        if link:
+            return f"medikeep:{link.medikeep_medication_id}", False
+        if product_id not in active_product_ids:
+            candidates = linked_keys_by_identity.get(report_identity(product_id) or frozenset(), set())
+            if len(candidates) == 1:
+                return next(iter(candidates)), True
+        return f"product:{product_id}", False
+
+    # Reconcile a stale duplicate created by an old product record: if an
+    # orphan pending record shares its local day and administration slot with
+    # a documented dose for the single matched medicine, it was never an
+    # additional administration opportunity. Preserve the row for audit, but
+    # make its superseded status explicit so it is not counted as a miss.
+    recorded_slots = {
+        (
+            report_medicine_key(dose.product_id)[0],
+            dose.scheduled_for.replace(tzinfo=timezone.utc).astimezone(zone).date(),
+            dose.administration_time,
+        )
+        for dose in doses
+        if dose.status in {"taken", "skipped"}
+    }
+    reconciled = False
+    for dose in doses:
+        medicine_key, is_orphan = report_medicine_key(dose.product_id)
+        slot_key = (
+            medicine_key,
+            dose.scheduled_for.replace(tzinfo=timezone.utc).astimezone(zone).date(),
+            dose.administration_time,
+        )
+        if is_orphan and dose.status == "due" and slot_key in recorded_slots:
+            dose.status = "superseded"
+            dose.notes = "Superseded duplicate historical scheduled dose"
+            reconciled = True
+    if reconciled:
+        session.commit()
     inactive_product_ids = set()
     try:
         current_medications = {item.id: item for item in all_medications(user_medikeep_config(user, session))}
@@ -1865,6 +1905,8 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
     by_product: dict[str, dict] = {}
     exceptions = []
     for dose in doses:
+        if dose.status == "superseded":
+            continue
         # Retain real historical taken/skipped actions. Do not retroactively
         # count an unactioned scheduled dose as missed when MediKeep now says
         # that medicine is stopped.
@@ -1878,12 +1920,7 @@ def build_compliance_report(user: User, session: Session, days: int = 7) -> dict
         elif dose.status == "snoozed" and dose.due_at > now:
             outcome = "pending"
         totals[outcome] += 1
-        link = links_by_product.get(dose.product_id)
-        medicine_key = f"medikeep:{link.medikeep_medication_id}" if link else f"product:{dose.product_id}"
-        if not link and dose.product_id not in active_product_ids:
-            candidates = linked_keys_by_identity.get(report_identity(dose.product_id) or frozenset(), set())
-            if len(candidates) == 1:
-                medicine_key = next(iter(candidates))
+        medicine_key, _ = report_medicine_key(dose.product_id)
         product = by_product.setdefault(
             medicine_key,
             {"product_id": dose.product_id, "medicine_name": names.get(dose.product_id) or (session.get(Product, dose.product_id).name if session.get(Product, dose.product_id) else "Unknown medicine"), "taken": 0, "skipped": 0, "missed": 0, "pending": 0},
