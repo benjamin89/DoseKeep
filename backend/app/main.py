@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
             pass
 
 
-app = FastAPI(title="DoseKeep", version="0.8.0", lifespan=lifespan)
+app = FastAPI(title="DoseKeep", version="0.8.1", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=master_key(),
@@ -1480,7 +1480,14 @@ def process_due_notifications(session: Session) -> None:
         settings = notification_settings(user)
         if not settings["enabled"] or not settings["topic"]:
             continue
-        changed = process_pill_box_routine(user, settings, now, session) or changed
+        # Pill-box top-up/stock prompts are useful extras, but they must never
+        # suppress the core scheduled-dose reminder pass.  In particular, a
+        # malformed historic routine setting or a routine-only calculation
+        # error should leave normal medication reminders working.
+        try:
+            changed = process_pill_box_routine(user, settings, now, session) or changed
+        except Exception as error:
+            print(f"pill-box routine failed for user {user.id}; continuing with medication reminders: {error}")
         generate_today_doses(user, session)
         display_names = medication_display_names(user, session)
         zone = user_zone(user)
