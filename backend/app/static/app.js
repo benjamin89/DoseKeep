@@ -414,7 +414,7 @@ async function loadAdministration() {
     const currentProductIds = new Set(current.map(medicine => medicine.product_id).filter(Boolean));
     const groups = new Map([["morning", []], ["midday", []], ["evening", []], ["bedtime", []], ["prn", []]]);
     scheduledDoses
-      .filter(dose => currentProductIds.has(dose.product_id))
+      .filter(dose => dose.status !== "superseded" && currentProductIds.has(dose.product_id))
       .forEach(dose => groups.get(dose.administration_time)?.push(dose));
     const headings = {
       morning: `Morning · ${configuredTimes.morning}`,

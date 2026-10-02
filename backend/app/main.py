@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
             pass
 
 
-app = FastAPI(title="DoseKeep", version="0.8.2", lifespan=lifespan)
+app = FastAPI(title="DoseKeep", version="0.8.3", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=master_key(),
@@ -1274,6 +1274,101 @@ def generate_today_doses(user: User, session: Session) -> None:
                 )
                 generated = True
     if generated:
+        session.commit()
+    reconcile_duplicate_today_doses(user, session, day_start, day_end, zone)
+
+
+def reconcile_duplicate_today_doses(
+    user: User,
+    session: Session,
+    day_start: datetime,
+    day_end: datetime,
+    zone: ZoneInfo,
+) -> None:
+    """Hide an old pending MAR row when the same scheduled dose was recorded.
+
+    Product records created before MediKeep links were made stable can leave a
+    second, unlinked scheduled dose behind.  It is not another administration
+    opportunity, but previously it could still produce an ntfy reminder after
+    the current medicine had been recorded as taken.
+    """
+    doses = (
+        session.query(ScheduledDose)
+        .filter(
+            ScheduledDose.user_id == user.id,
+            ScheduledDose.scheduled_for >= day_start,
+            ScheduledDose.scheduled_for < day_end,
+            ScheduledDose.administration_time.in_(list(DEFAULT_SLOT_TIMES)),
+        )
+        .all()
+    )
+    if not doses:
+        return
+    product_ids = {dose.product_id for dose in doses}
+    products = {product.id: product for product in session.query(Product).filter(Product.id.in_(product_ids)).all()}
+    names = medication_display_names(user, session)
+    links_by_product = {
+        link.product_id: link
+        for link in session.query(MediKeepLink).filter_by(user_id=user.id).all()
+    }
+    active_product_ids = {
+        product_id
+        for product_id, in session.query(Pack.product_id)
+        .filter(accessible_pack_filter(user, session), Pack.status == "active")
+        .distinct()
+        .all()
+    }
+    linked_keys_by_identity: dict[frozenset[str], set[str]] = {}
+    for product_id, link in links_by_product.items():
+        product = products.get(product_id) or session.get(Product, product_id)
+        if not product:
+            continue
+        identity = frozenset(normalize_name(names.get(product_id) or product.name))
+        if identity:
+            linked_keys_by_identity.setdefault(identity, set()).add(f"medikeep:{link.medikeep_medication_id}")
+
+    def dose_key(dose: ScheduledDose) -> tuple[str, bool]:
+        link = links_by_product.get(dose.product_id)
+        if link:
+            return f"medikeep:{link.medikeep_medication_id}", False
+        # An unlinked product with no active pack may only be historic MAR
+        # debris.  Match it only when its displayed name maps unambiguously to
+        # one linked medicine; never guess between similarly named medicines.
+        product = products.get(dose.product_id)
+        if product and dose.product_id not in active_product_ids:
+            candidates = linked_keys_by_identity.get(
+                frozenset(normalize_name(names.get(dose.product_id) or product.name)), set()
+            )
+            if len(candidates) == 1:
+                return next(iter(candidates)), True
+        return f"product:{dose.product_id}", False
+
+    recorded_slots = {
+        (
+            dose_key(dose)[0],
+            dose.scheduled_for.replace(tzinfo=timezone.utc).astimezone(zone).date(),
+            dose.administration_time,
+        )
+        for dose in doses
+        if dose.status in {"taken", "skipped"}
+    }
+    changed = False
+    for dose in doses:
+        if dose.status not in {"due", "snoozed"}:
+            continue
+        key, orphan = dose_key(dose)
+        slot_key = (
+            key,
+            dose.scheduled_for.replace(tzinfo=timezone.utc).astimezone(zone).date(),
+            dose.administration_time,
+        )
+        # Exact same medicine/slot duplicates are always invalid.  For an
+        # orphan product, require the unambiguous identity check above.
+        if slot_key in recorded_slots and (orphan or key.startswith("medikeep:") or key.startswith("product:")):
+            dose.status = "superseded"
+            dose.notes = "Superseded duplicate scheduled dose"
+            changed = True
+    if changed:
         session.commit()
 
 
