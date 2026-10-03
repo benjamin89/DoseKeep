@@ -1350,7 +1350,11 @@ def reconcile_duplicate_today_doses(
             dose.administration_time,
         )
         for dose in doses
-        if dose.status in {"taken", "skipped"}
+        # A physically prepared dose is already the chosen administration
+        # opportunity for that medicine/slot.  An orphan pending duplicate
+        # must not be offered for preparation again just because it has not
+        # yet been recorded as taken.
+        if dose.status in {"taken", "skipped"} or dose.prepared_at is not None
     }
     changed = False
     for dose in doses:
@@ -1819,6 +1823,11 @@ def prepare_pill_box(
     zone = user_zone(user)
     start = datetime.combine(min(selected_days), time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
     end = datetime.combine(max(selected_days) + timedelta(days=1), time.min, tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+    # Historical product rows can leave a second unprepared dose alongside a
+    # correctly prepared current dose.  Reconcile those before deciding what
+    # still needs moving from packs, otherwise a safe top-up reports a false
+    # out-of-stock warning for the orphan row.
+    reconcile_duplicate_today_doses(user, session, start, end, zone)
     doses = (
         session.query(ScheduledDose)
         .filter(
