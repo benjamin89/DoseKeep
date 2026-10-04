@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
             pass
 
 
-app = FastAPI(title="DoseKeep", version="0.8.3", lifespan=lifespan)
+app = FastAPI(title="DoseKeep", version="0.8.4", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=master_key(),
@@ -1358,6 +1358,15 @@ def reconcile_duplicate_today_doses(
     }
     changed = False
     for dose in doses:
+        # v0.8.3 may have marked the real prepared dose itself as a
+        # duplicate.  A prepared tablet is the authoritative physical dose;
+        # restore that row and only supersede its unprepared counterpart.
+        if dose.prepared_at is not None:
+            if dose.status == "superseded" and dose.notes == "Superseded duplicate scheduled dose":
+                dose.status = "due"
+                dose.notes = None
+                changed = True
+            continue
         if dose.status not in {"due", "snoozed"}:
             continue
         key, orphan = dose_key(dose)
