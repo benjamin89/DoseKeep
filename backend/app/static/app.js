@@ -1152,6 +1152,14 @@ function renderPack(pack, product, container = packsContainer) {
   caption.textContent = `tablets/items physically in pack · original pack: ${pack.quantity_initial}`;
   card.append(caption);
 
+  const dosetteQuantity = Number(pack.quantity_in_dosette || 0);
+  if (!archived && dosetteQuantity > 0) {
+    const dosetteStock = document.createElement("p");
+    dosetteStock.className = "medicine-note";
+    dosetteStock.textContent = `${formatQuantity(dosetteQuantity)} tablet/item${dosetteQuantity === 1 ? "" : "s"} currently in the pill box from this pack.`;
+    card.append(dosetteStock);
+  }
+
   if (archived) {
     const archiveNote = document.createElement("p");
     archiveNote.className = "medicine-note";
@@ -1282,7 +1290,9 @@ function renderPack(pack, product, container = packsContainer) {
   });
   card.append(removeStock);
 
-  if (Number(pack.quantity_remaining) <= 0 && Number(pack.quantity_in_dosette || 0) <= 0) {
+  const packEmpty = Number(pack.quantity_remaining) <= 0;
+  const dosetteEmpty = dosetteQuantity <= 0;
+  if (packEmpty && dosetteEmpty) {
     const archive = button("Archive empty pack", "secondary compact");
     archive.addEventListener("click", async () => {
       if (!confirm("Archive this empty pack? It will disappear from the pack list but its history will be kept.")) return;
@@ -1296,6 +1306,11 @@ function renderPack(pack, product, container = packsContainer) {
       }
     });
     card.append(archive);
+  } else if (packEmpty) {
+    const archiveBlocked = document.createElement("p");
+    archiveBlocked.className = "hint";
+    archiveBlocked.textContent = `Archive unavailable: ${formatQuantity(dosetteQuantity)} tablet/item${dosetteQuantity === 1 ? "" : "s"} remains in the pill box from this pack. Record, return, or reconcile it before archiving.`;
+    card.append(archiveBlocked);
   }
 
   const recent = document.createElement("ul");
