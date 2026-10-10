@@ -560,7 +560,8 @@ async function loadAdministration() {
         control.addEventListener("click", async () => {
           control.disabled = true;
           try {
-            const entered = prompt("How many tablets/items did you take?", "1");
+            const medicineAndDose = [medicine.name, medicine.dosage].filter(Boolean).join(" ");
+            const entered = prompt(`How many ${medicineAndDose} did you take?`, "1");
             if (entered === null) {
               control.disabled = false;
               return;
@@ -1665,4 +1666,4 @@ async function bootstrap() {
 }
 
 bootstrap();
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.28.0");
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js?v=0.29.0");
