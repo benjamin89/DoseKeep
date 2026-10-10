@@ -567,6 +567,10 @@ async function loadAdministration() {
             }
             const quantity = Number(entered);
             if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("Enter a quantity greater than 0.");
+            if (!confirm(`Record ${doseLabel(quantity)} of ${medicine.name} as a PRN dose?`)) {
+              control.disabled = false;
+              return;
+            }
             await api(`/api/v1/products/${medicine.product_id}/prn`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -583,9 +587,30 @@ async function loadAdministration() {
       });
       const recorded = groups.get("prn") || [];
       if (recorded.length) {
-        const history = document.createElement("p");
+        const history = document.createElement("div");
         history.className = "medicine-note";
-        history.textContent = `Recorded today: ${recorded.map(dose => `${dose.medicine_name} (${doseLabel(dose.quantity)}) at ${utcDate(dose.actioned_at || dose.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`).join("; ")}.`;
+        history.append(document.createTextNode("Recorded today: "));
+        recorded.filter(dose => dose.status === "taken").forEach((dose, index) => {
+          if (index) history.append(document.createTextNode("; "));
+          history.append(document.createTextNode(`${dose.medicine_name} (${doseLabel(dose.quantity)}) at ${utcDate(dose.actioned_at || dose.scheduled_for).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`));
+          const elapsedMs = Date.now() - utcDate(dose.actioned_at || dose.scheduled_for).getTime();
+          if (elapsedMs >= 0 && elapsedMs <= 15 * 60 * 1000) {
+            const undo = button("Undo", "outline compact");
+            undo.addEventListener("click", async () => {
+              if (!confirm(`Undo the recorded PRN dose: ${doseLabel(dose.quantity)} of ${dose.medicine_name}? This restores the original pack stock.`)) return;
+              undo.disabled = true;
+              try {
+                await api(`/api/v1/doses/${dose.id}/undo-prn`, { method: "POST" });
+                await Promise.all([loadAdministration(), loadMedicines(), loadPacks()]);
+              } catch (error) {
+                alert(`Could not undo PRN dose: ${error.message}`);
+                undo.disabled = false;
+              }
+            });
+            history.append(document.createTextNode(" "), undo);
+          }
+        });
+        if (!history.childNodes.length || history.childNodes.length === 1) history.textContent = "No active PRN doses recorded today.";
         section.append(history);
       }
       administrationContainer.append(section);
@@ -1033,6 +1058,7 @@ function formatEvent(event) {
     taken: "Taken from dosette",
     dosette_fill: "Moved to dosette",
     returned_to_pack: "Returned from pill box",
+    prn_undo: "PRN dose undone",
     skipped: "Skipped",
     disposed: "Disposed",
     removed_from_stock: "Removed from stock",
@@ -1066,24 +1092,36 @@ async function loadPacks() {
   packsContainer.textContent = "Loading packs…";
   try {
     const [packs, products] = await Promise.all([api("/api/v1/packs"), api("/api/v1/products")]);
-    const productNames = new Map(products.map(product => [product.id, product.name]));
+    const productsById = new Map(products.map(product => [product.id, product]));
     packsContainer.replaceChildren();
     const active = packs.filter(pack => pack.status === "active");
-    if (!active.length) {
+    const archived = packs.filter(pack => pack.status === "archived");
+    if (!active.length && !archived.length) {
       packsContainer.textContent = "No packs yet. Scan your first pack above.";
       return;
     }
-    active.forEach(pack => renderPack(pack, productNames.get(pack.product_id) || "Medicine pack"));
+    active.forEach(pack => renderPack(pack, productsById.get(pack.product_id)));
+    if (archived.length) {
+      const archive = document.createElement("details");
+      archive.className = "archive-section";
+      const summary = document.createElement("summary");
+      summary.textContent = `Archived packs (${archived.length})`;
+      archive.append(summary);
+      const archiveList = document.createElement("div");
+      archived.forEach(pack => renderPack(pack, productsById.get(pack.product_id), archiveList));
+      archive.append(archiveList);
+      packsContainer.append(archive);
+    }
   } catch (error) {
     packsContainer.textContent = `Could not load packs: ${error.message}`;
   }
 }
 
-function renderPack(pack, productName) {
+function renderPack(pack, product, container = packsContainer) {
   const card = document.createElement("article");
   card.className = "pack-card";
   const title = document.createElement("h3");
-  title.textContent = productName;
+  title.textContent = product?.name || "Medicine pack";
   card.append(title);
 
   const meta = document.createElement("p");
@@ -1092,7 +1130,18 @@ function renderPack(pack, productName) {
   meta.textContent = `${expiry}${pack.batch_number ? ` · Batch ${pack.batch_number}` : ""}`;
   card.append(meta);
 
-  addHouseholdPackControl(pack, card);
+  if (product?.leaflet_url) {
+    const leaflet = document.createElement("a");
+    leaflet.className = "official-leaflet-link";
+    leaflet.href = product.leaflet_url;
+    leaflet.target = "_blank";
+    leaflet.rel = "noopener noreferrer";
+    leaflet.textContent = "Official leaflet and medicine information ↗";
+    card.append(leaflet);
+  }
+
+  const archived = pack.status === "archived";
+  if (!archived) addHouseholdPackControl(pack, card);
 
   const stock = document.createElement("p");
   stock.className = "stock-number";
@@ -1102,6 +1151,19 @@ function renderPack(pack, productName) {
   caption.className = "stock-caption";
   caption.textContent = `tablets/items physically in pack · original pack: ${pack.quantity_initial}`;
   card.append(caption);
+
+  if (archived) {
+    const archiveNote = document.createElement("p");
+    archiveNote.className = "medicine-note";
+    archiveNote.textContent = "Archived — retained for stock, batch, expiry and activity traceability.";
+    card.append(archiveNote);
+    const recent = document.createElement("ul");
+    recent.className = "recent-events";
+    card.append(recent);
+    container.append(card);
+    loadEvents(pack.id, recent);
+    return;
+  }
 
   const correctionLabel = document.createElement("p");
   correctionLabel.className = "hint";
@@ -1220,10 +1282,26 @@ function renderPack(pack, productName) {
   });
   card.append(removeStock);
 
+  if (Number(pack.quantity_remaining) <= 0 && Number(pack.quantity_in_dosette || 0) <= 0) {
+    const archive = button("Archive empty pack", "secondary compact");
+    archive.addEventListener("click", async () => {
+      if (!confirm("Archive this empty pack? It will disappear from the pack list but its history will be kept.")) return;
+      archive.disabled = true;
+      try {
+        await api(`/api/v1/packs/${pack.id}/archive`, { method: "POST" });
+        await Promise.all([loadPacks(), loadMedicines()]);
+      } catch (error) {
+        alert(`Could not archive pack: ${error.message}`);
+        archive.disabled = false;
+      }
+    });
+    card.append(archive);
+  }
+
   const recent = document.createElement("ul");
   recent.className = "recent-events";
   card.append(recent);
-  packsContainer.append(card);
+  container.append(card);
   loadEvents(pack.id, recent);
 }
 

@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
             pass
 
 
-app = FastAPI(title="DoseKeep", version="0.8.4", lifespan=lifespan)
+app = FastAPI(title="DoseKeep", version="0.8.5", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=master_key(),
@@ -2450,7 +2450,6 @@ def record_prn_dose(product_id: int, payload: PRNDoseCreate, user: User = Depend
     if not schedules or not any(schedule.as_required for schedule in schedules):
         raise HTTPException(status_code=409, detail="This medicine does not have an As required (PRN) plan")
     now = datetime.utcnow()
-    consume_stock(user, product_id, payload.quantity, session, "PRN dose")
     record = ScheduledDose(
         user_id=user.id,
         product_id=product_id,
@@ -2463,9 +2462,55 @@ def record_prn_dose(product_id: int, payload: PRNDoseCreate, user: User = Depend
         notes="Recorded PRN dose",
     )
     session.add(record)
+    # Allocate an ID before writing stock events so a short-lived undo can
+    # restore the exact packs originally used, including split doses.
+    session.flush()
+    consume_stock(user, product_id, payload.quantity, session, f"PRN dose #{record.id}")
     session.commit()
     session.refresh(record)
     return dose_read(record, session, medication_display_names(user, session))
+
+
+@app.post("/api/v1/doses/{dose_id}/undo-prn")
+def undo_prn_dose(dose_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    """Undo a just-recorded PRN dose, returning units to their original packs.
+
+    The short window limits this to correcting immediate recording mistakes,
+    while retaining an auditable reversed MAR row and stock-event trail.
+    """
+    dose = session.query(ScheduledDose).filter_by(id=dose_id, user_id=user.id).first()
+    if not dose:
+        raise HTTPException(status_code=404, detail="Dose not found")
+    if dose.administration_time != "prn" or dose.status != "taken" or not dose.actioned_at:
+        raise HTTPException(status_code=409, detail="Only a recorded PRN dose can be undone")
+    if datetime.utcnow() - dose.actioned_at > timedelta(minutes=15):
+        raise HTTPException(status_code=409, detail="The 15-minute PRN undo window has expired")
+
+    original_note = f"PRN dose #{dose.id}"
+    consumption_events = (
+        session.query(SupplyEvent)
+        .filter_by(event_type="taken_from_pack", notes=original_note)
+        .order_by(SupplyEvent.id)
+        .all()
+    )
+    if not consumption_events or abs(sum(event.quantity for event in consumption_events) - dose.quantity) > 1e-6:
+        raise HTTPException(status_code=409, detail="The PRN stock allocation cannot be safely undone")
+
+    for event in consumption_events:
+        pack = session.get(Pack, event.pack_id)
+        if not pack:
+            raise HTTPException(status_code=409, detail="The original PRN pack is no longer available")
+        pack.quantity_remaining = round(pack.quantity_remaining + event.quantity, 6)
+        session.add(SupplyEvent(
+            pack_id=pack.id,
+            event_type="prn_undo",
+            quantity=event.quantity,
+            notes=f"Undid PRN dose #{dose.id}",
+        ))
+    dose.status = "reversed"
+    dose.notes = "PRN dose undone within 15 minutes"
+    session.commit()
+    return {"ok": True}
 
 
 @app.post("/api/v1/products", response_model=ProductRead, status_code=201)
@@ -2606,6 +2651,22 @@ def correct_pack_stock(pack_id: int, correction: StockCorrection, user: User = D
                 notes=correction.notes or f"Physical count adjusted from {previous} to {correction.quantity_remaining}",
             )
         )
+    session.commit()
+    session.refresh(pack)
+    return pack
+
+
+@app.post("/api/v1/packs/{pack_id}/archive", response_model=PackRead)
+def archive_pack(pack_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)):
+    """Hide an empty pack from day-to-day stock views without deleting history."""
+    pack = session.query(Pack).filter(Pack.id == pack_id, accessible_pack_filter(user, session)).first()
+    if not pack or not can_change_pack(user, pack, session):
+        raise HTTPException(status_code=404, detail="Pack not found")
+    if pack.status == "archived":
+        return pack
+    if pack.quantity_remaining > 1e-9 or pack.quantity_in_dosette > 1e-9:
+        raise HTTPException(status_code=409, detail="Only an empty pack can be archived; correct or remove its remaining stock first")
+    pack.status = "archived"
     session.commit()
     session.refresh(pack)
     return pack
