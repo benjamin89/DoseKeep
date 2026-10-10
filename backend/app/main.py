@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
             pass
 
 
-app = FastAPI(title="DoseKeep", version="0.8.8", lifespan=lifespan)
+app = FastAPI(title="DoseKeep", version="0.8.9", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=master_key(),
@@ -1356,6 +1356,27 @@ def reconcile_duplicate_today_doses(
         # yet been recorded as taken.
         if dose.status in {"taken", "skipped"} or dose.prepared_at is not None
     }
+
+    # A second active product record can legitimately exist while an old pack
+    # is still in use.  It must not, however, create a second tablet in the
+    # same pill-box compartment when its displayed medicine name is exactly
+    # the same as an already prepared dose.  The more conservative linked /
+    # orphan identity check above does not cover that case because both
+    # products have active packs.  Restrict this fallback to a *prepared*
+    # dose, where the physical tablet is authoritative.
+    def display_identity(dose: ScheduledDose) -> frozenset[str]:
+        product = products.get(dose.product_id) or session.get(Product, dose.product_id)
+        return frozenset(normalize_name(names.get(dose.product_id) or (product.name if product else "")))
+
+    prepared_display_slots = {
+        (
+            dose.scheduled_for.replace(tzinfo=timezone.utc).astimezone(zone).date(),
+            dose.administration_time,
+            display_identity(dose),
+        )
+        for dose in doses
+        if dose.prepared_at is not None and display_identity(dose)
+    }
     changed = False
     for dose in doses:
         # v0.8.3 may have marked the real prepared dose itself as a
@@ -1375,9 +1396,17 @@ def reconcile_duplicate_today_doses(
             dose.scheduled_for.replace(tzinfo=timezone.utc).astimezone(zone).date(),
             dose.administration_time,
         )
+        prepared_display_key = (
+            dose.scheduled_for.replace(tzinfo=timezone.utc).astimezone(zone).date(),
+            dose.administration_time,
+            display_identity(dose),
+        )
         # Exact same medicine/slot duplicates are always invalid.  For an
         # orphan product, require the unambiguous identity check above.
-        if slot_key in recorded_slots and (orphan or key.startswith("medikeep:") or key.startswith("product:")):
+        if (
+            (slot_key in recorded_slots and (orphan or key.startswith("medikeep:") or key.startswith("product:")))
+            or (prepared_display_key in prepared_display_slots and bool(prepared_display_key[2]))
+        ):
             dose.status = "superseded"
             dose.notes = "Superseded duplicate scheduled dose"
             changed = True
