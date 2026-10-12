@@ -2603,7 +2603,18 @@ def create_pack_from_scan(scan: ScannedPackCreate, user: User = Depends(current_
 
     consolidate_medikeep_products(user, session)
 
-    existing_pack = session.query(Pack).filter(Pack.user_id == user.id, Pack.gtin == gtin, Pack.serial_number == decoded.get("serial_number")).first()
+    # A GTIN identifies a product, not an individual physical pack.  Only a
+    # GS1 serial number can make a repeat scan idempotent; otherwise a second
+    # purchase (even from the same batch and with the same expiry) is another
+    # pack that needs its own stock and audit trail.
+    serial_number = decoded.get("serial_number")
+    existing_pack = None
+    if serial_number:
+        existing_pack = session.query(Pack).filter(
+            Pack.user_id == user.id,
+            Pack.gtin == gtin,
+            Pack.serial_number == serial_number,
+        ).first()
     if existing_pack:
         return {"product": existing_pack.product, "pack": existing_pack, "created": False}
 
